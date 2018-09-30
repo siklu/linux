@@ -1457,6 +1457,8 @@ static void mvpp2_interrupts_unmask(void *arg)
 		return;
 
 	thread = mvpp2_cpu_to_thread(port->priv, cpu);
+	if (port->flags & MVPP22_F_IF_MUSDK)
+		return;
 
 	val = MVPP2_CAUSE_MISC_SUM_MASK |
 		MVPP2_CAUSE_RXQ_OCCUP_DESC_ALL_MASK(port->priv->hw_version);
@@ -1975,6 +1977,12 @@ static const struct mvpp2_ethtool_counter mvpp2_ethtool_xdp[] = {
 	{ ETHTOOL_XDP_XMIT_ERR, "tx_xdp_xmit_errors", },
 };
 
+static const char mvpp22_priv_flags_strings[][ETH_GSTRING_LEN] = {
+	"musdk",
+};
+
+#define MVPP22_F_IF_MUSDK_PRIV	BIT(0)
+
 #define MVPP2_N_ETHTOOL_STATS(ntxqs, nrxqs)	(ARRAY_SIZE(mvpp2_ethtool_mib_regs) + \
 						 ARRAY_SIZE(mvpp2_ethtool_port_regs) + \
 						 (ARRAY_SIZE(mvpp2_ethtool_txq_regs) * (ntxqs)) + \
@@ -1987,6 +1995,12 @@ static void mvpp2_ethtool_get_strings(struct net_device *netdev, u32 sset,
 	struct mvpp2_port *port = netdev_priv(netdev);
 	const char *str;
 	int i, q;
+
+	if (sset == ETH_SS_PRIV_FLAGS) {
+		memcpy(data, mvpp22_priv_flags_strings,
+		       ARRAY_SIZE(mvpp22_priv_flags_strings) * ETH_GSTRING_LEN);
+		return;
+	}
 
 	if (sset != ETH_SS_STATS)
 		return;
@@ -2156,9 +2170,13 @@ static int mvpp2_ethtool_get_sset_count(struct net_device *dev, int sset)
 {
 	struct mvpp2_port *port = netdev_priv(dev);
 
-	if (sset == ETH_SS_STATS)
+	switch (sset) {
+	case ETH_SS_STATS:
 		return MVPP2_N_ETHTOOL_STATS(port->ntxqs, port->nrxqs);
-
+	case ETH_SS_PRIV_FLAGS:
+		return (port->priv->hw_version == MVPP21) ?
+			0 : ARRAY_SIZE(mvpp22_priv_flags_strings);
+	}
 	return -EOPNOTSUPP;
 }
 
@@ -2349,6 +2367,9 @@ static void mvpp2_egress_enable(struct mvpp2_port *port)
 	int queue;
 	int tx_port_num = mvpp2_egress_port(port);
 
+	if (port->flags & MVPP22_F_IF_MUSDK)
+		return;
+
 	/* Enable all initialized TXs. */
 	qmap = 0;
 	for (queue = 0; queue < port->ntxqs; queue++) {
@@ -2370,6 +2391,9 @@ static void mvpp2_egress_disable(struct mvpp2_port *port)
 	u32 reg_data;
 	int delay;
 	int tx_port_num = mvpp2_egress_port(port);
+
+	if (port->flags & MVPP22_F_IF_MUSDK)
+		return;
 
 	/* Issue stop command for active channels only */
 	mvpp2_write(port->priv, MVPP2_TXP_SCHED_PORT_INDEX_REG, tx_port_num);
@@ -4766,7 +4790,8 @@ static void mvpp2_irqs_deinit(struct mvpp2_port *port)
 static bool mvpp22_rss_is_supported(struct mvpp2_port *port)
 {
 	return (queue_mode == MVPP2_QDIST_MULTI_MODE) &&
-		!(port->flags & MVPP2_F_LOOPBACK);
+		!(port->flags & MVPP2_F_LOOPBACK) &&
+		!(port->flags & MVPP22_F_IF_MUSDK);
 }
 
 static int mvpp2_open(struct net_device *dev)
@@ -5049,6 +5074,11 @@ static int mvpp2_change_mtu(struct net_device *dev, int mtu)
 	bool running = netif_running(dev);
 	struct mvpp2 *priv = port->priv;
 	int err;
+
+	if (port->flags & MVPP22_F_IF_MUSDK) {
+		netdev_err(dev, "MTU cannot be modified in MUSDK mode\n");
+		return -EPERM;
+	}
 
 	if (!IS_ALIGNED(MVPP2_RX_PKT_SIZE(mtu), 8)) {
 		netdev_info(dev, "illegal MTU value %d, round to %d\n", mtu,
@@ -5459,12 +5489,16 @@ mvpp2_ethtool_get_coalesce(struct net_device *dev,
 static void mvpp2_ethtool_get_drvinfo(struct net_device *dev,
 				      struct ethtool_drvinfo *drvinfo)
 {
+	struct mvpp2_port *port = netdev_priv(dev);
+
 	strscpy(drvinfo->driver, MVPP2_DRIVER_NAME,
 		sizeof(drvinfo->driver));
 	strscpy(drvinfo->version, MVPP2_DRIVER_VERSION,
 		sizeof(drvinfo->version));
 	strscpy(drvinfo->bus_info, dev_name(&dev->dev),
 		sizeof(drvinfo->bus_info));
+	drvinfo->n_priv_flags = (port->priv->hw_version == MVPP21) ?
+			0 : ARRAY_SIZE(mvpp22_priv_flags_strings);
 }
 
 static void
@@ -5931,13 +5965,6 @@ static void mvpp2_rx_irqs_setup(struct mvpp2_port *port)
 
 		val = qv->sw_thread_id;
 		val |= port->id << MVPP22_ISR_RXQ_GROUP_INDEX_GROUP_OFFSET;
-		mvpp2_write(priv, MVPP22_ISR_RXQ_GROUP_INDEX_REG, val);
-
-		val = qv->first_rxq;
-		val |= qv->nrxqs << MVPP22_ISR_RXQ_SUB_GROUP_SIZE_OFFSET;
-		mvpp2_write(priv, MVPP22_ISR_RXQ_SUB_GROUP_CONFIG_REG, val);
-	}
-}
 
 /* Initialize port HW */
 static int mvpp2_port_init(struct mvpp2_port *port)
@@ -7075,6 +7102,7 @@ static void mvpp2_port_remove(struct mvpp2_port *port)
 {
 	int i;
 
+	mvpp2_port_musdk_set(port->dev, false);
 	unregister_netdev(port->dev);
 	if (port->phylink)
 		phylink_destroy(port->phylink);

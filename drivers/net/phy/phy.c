@@ -1645,6 +1645,8 @@ void phy_stop(struct phy_device *phydev)
 
 	phydev->state = PHY_HALTED;
 	phy_process_state_change(phydev, old_state);
+	if (phydev->drv->stop)
+		phydev->drv->stop(phydev);
 
 	state_work = _phy_state_machine(phydev);
 	mutex_unlock(&phydev->lock);
@@ -1678,6 +1680,9 @@ void phy_start(struct phy_device *phydev)
 		     phy_state_to_str(phydev->state));
 		goto out;
 	}
+
+	if (phydev->drv->start && phydev->drv->start(phydev))
+		goto out;
 
 	if (phydev->sfp_bus)
 		sfp_upstream_start(phydev->sfp_bus);

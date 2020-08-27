@@ -32,13 +32,13 @@
 	/* Declare wigig devices for the gen_node_info_file.sh script */
 	wigig_devices {
 		wigig0: wigig@0 {
-			pci-bus = "0003:01:00.0";
+			pci-bus = "0000:01:00.0";
 		};
 		wigig1: wigig@1 {
 			pci-bus = "0002:01:00.0";
 		};
 		wigig2: wigig@2 {
-			pci-bus = "0000:01:00.0";
+			pci-bus = "0003:01:00.0";
 		};
 		wigig3: wigig@3 {
 			pci-bus = "0001:01:00.0";

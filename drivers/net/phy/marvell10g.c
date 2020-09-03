@@ -123,6 +123,8 @@ enum {
 	MV_V2_PORT_CTRL_PWRDOWN					= BIT(11),
 	MV_V2_33X0_PORT_CTRL_SWRST				= BIT(15),
 	MV_V2_33X0_PORT_CTRL_MACTYPE_MASK			= 0x7,
+	MV_V2_PORT_MAC_TYPE_MASK = 0x7,
+	MV_V2_PORT_MAC_TYPE_XFI_SGMII_AUTONEG = 0x4,
 	MV_V2_33X0_PORT_CTRL_MACTYPE_RXAUI			= 0x0,
 	MV_V2_3310_PORT_CTRL_MACTYPE_XAUI_RATE_MATCH		= 0x1,
 	MV_V2_3340_PORT_CTRL_MACTYPE_RXAUI_NO_SGMII_AN		= 0x1,
@@ -993,6 +995,13 @@ static int mv3310_config_init(struct phy_device *phydev)
 	priv->mactype = &chip->mactypes[mactype];
 
 	mv3310_fill_possible_interfaces(phydev);
+
+	/* Force XFI/SGMII/Auto-neg mode regardless of strap configuration */
+	err = phy_modify_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
+				     MV_V2_PORT_MAC_TYPE_MASK,
+				     MV_V2_PORT_MAC_TYPE_XFI_SGMII_AUTONEG);
+	if (err)
+		return err;
 
 	/* Enable EDPD mode - saving 600mW */
 	err = mv3310_set_edpd(phydev, ETHTOOL_PHY_EDPD_DFLT_TX_MSECS);

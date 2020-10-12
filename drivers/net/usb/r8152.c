@@ -9807,11 +9807,17 @@ static int rtl8152_probe_once(struct usb_interface *intf,
 	struct r8152 *tp;
 	struct net_device *netdev;
 	int ret;
+	const char *ifname = "usb%d";
 
 	usb_reset_device(udev);
 	netdev = alloc_etherdev(sizeof(struct r8152));
 	if (!netdev) {
 		dev_err(&intf->dev, "Out of memory\n");
+		return -ENOMEM;
+	}
+
+	if (dev_alloc_name(netdev, ifname) < 0) {
+		dev_err(&intf->dev, "Failed to allocate device name\n");
 		return -ENOMEM;
 	}
 

@@ -78,14 +78,14 @@ static long etx_ioctl(struct file *file, unsigned int cmd, unsigned long arg) {
 				return -EFAULT;
 			}
 			if ((enum dma_data_direction)args.dir == DMA_TO_DEVICE) {
-				arch_sync_dma_for_device(NULL, args.paddr,
-						args.len, DMA_TO_DEVICE);
+				arch_sync_dma_for_device(args.paddr, args.len,
+						DMA_TO_DEVICE);
 				// pr_info(UNIT_NAME "DMA TO DEVICE [%lu]\n", args.len);
 			}
 			else if ((enum dma_data_direction)args.dir == 
 					DMA_FROM_DEVICE) {
-				arch_sync_dma_for_cpu(NULL, args.paddr,
-					       args.len, DMA_FROM_DEVICE);
+				arch_sync_dma_for_cpu(args.paddr, args.len,
+						DMA_FROM_DEVICE);
 				// pr_info(UNIT_NAME "DMA FROM DEVICE [%lu]\n", args.len);
 			}
 			else {

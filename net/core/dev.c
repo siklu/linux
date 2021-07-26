@@ -6697,7 +6697,8 @@ static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 		trace_napi_poll(n, work, weight);
 	}
 
-	printk("############## work=%u weight=%u",work, weight);
+	if (work > weight)
+		printk("############## work=%u weight=%u",work, weight);
 	WARN_ON_ONCE(work > weight);
 
 	if (likely(work < weight))

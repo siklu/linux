@@ -4531,6 +4531,7 @@ static int enqueue_to_backlog(struct sk_buff *skb, int cpu,
 
 	netdev_max_backlog = 3000;
 	if (qlen <= netdev_max_backlog && !skb_flow_limit(skb, qlen)) {
+		printk("************ passed!")
 		if (qlen) {
 enqueue:
 			__skb_queue_tail(&sd->input_pkt_queue, skb);

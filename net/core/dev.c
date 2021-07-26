@@ -4529,13 +4529,13 @@ static int enqueue_to_backlog(struct sk_buff *skb, int cpu,
 	if (!netif_running(skb->dev))
 		goto drop;
 	qlen = skb_queue_len(&sd->input_pkt_queue);
-
+/*
 	netdev_max_backlog = 3000;
 	if (qlen > xxx_qlen) {
 		printk("************ xxx_qlen=%u", qlen);
 		xxx_qlen = qlen;
 	}
-
+*/
 	if (qlen <= netdev_max_backlog && !skb_flow_limit(skb, qlen)) {
 		//printk("************ passed!");
 		if (qlen) {
@@ -4560,6 +4560,7 @@ enqueue:
 	}
 
 drop:
+	printk("************ drop!");
 	sd->dropped++;
 	rps_unlock(sd);
 
@@ -6696,6 +6697,7 @@ static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 		trace_napi_poll(n, work, weight);
 	}
 
+	printk("############## work=%u weight=%u",work, weight);
 	WARN_ON_ONCE(work > weight);
 
 	if (likely(work < weight))

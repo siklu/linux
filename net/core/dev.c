@@ -4509,6 +4509,7 @@ static bool skb_flow_limit(struct sk_buff *skb, unsigned int qlen)
 	return false;
 }
 
+int xxx_qlen = 0;
 /*
  * enqueue_to_backlog is called to queue an skb to a per CPU backlog
  * queue (may be a remote CPU queue).
@@ -4530,8 +4531,13 @@ static int enqueue_to_backlog(struct sk_buff *skb, int cpu,
 	qlen = skb_queue_len(&sd->input_pkt_queue);
 
 	netdev_max_backlog = 3000;
+	if (qlen > xxx_qlen) {
+		printk("************ xxx_qlen=%u", qlen);
+		xxx_qlen = qlen;
+	}
+
 	if (qlen <= netdev_max_backlog && !skb_flow_limit(skb, qlen)) {
-		printk("************ passed!");
+		//printk("************ passed!");
 		if (qlen) {
 enqueue:
 			__skb_queue_tail(&sd->input_pkt_queue, skb);
@@ -4549,9 +4555,8 @@ enqueue:
 				____napi_schedule(sd, &sd->backlog);
 		}
 		goto enqueue;
-	}
-	else {
-		printk("************ missed!");
+	} else {
+		//printk("************ missed!");
 	}
 
 drop:

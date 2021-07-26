@@ -6683,8 +6683,8 @@ static int napi_poll(struct napi_struct *n, struct list_head *repoll)
 
 	have = netpoll_poll_lock(n);
 
-	weight = n->weight;
-
+	//weight = n->weight;
+	weight = 300;
 	/* This NAPI_STATE_SCHED test is for avoiding a race
 	 * with netpoll's poll_napi().  Only the entity which
 	 * obtains the lock and sees NAPI_STATE_SCHED set will

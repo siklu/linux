@@ -17,11 +17,29 @@
 	aliases {
 		serial0 = &blsp1_uart3;
 		ethernet0 = &sgmii;
+		ethernet1 = &wigig0;
+		wigig_device_tu = &wigig0;
+	};
+
+	/* Declare wigig devices for the gen_node_info_file.sh script.
+	   Note that this declaration is not used by any driver and resides in
+	   the dts by Facebook convention only. */
+	wigig_devices {
+		wigig0: wigig@0 {
+			pci-bus = "0000:01:00.0";
+		};
+	};
+
+	usb3h0_phy: usb3_phy0 {
+		compatible = "usb-nop-xceiv";
+		reset-gpios = <&tlmm 55 GPIO_ACTIVE_HIGH>;
+		pinctrl-0 = <&usb3_reset_pins>;
+		pinctrl-names = "default";
 	};
 
 	chosen {
 		stdout-path = "serial0:115200n8";
-		bootargs-append = " swiotlb=1";
+		bootargs = " swiotlb=1 isolcpus=2,3";
 	};
 
 	/*
@@ -117,6 +135,12 @@
 		bias-pull-down;
 	};
 
+	usb3_reset_pins: usb3-reset_pins {
+		pins = "gpio55";
+		function = "gpio";
+		drive-strength = <8>;
+	};
+
 	mdio_pins: mdio_pinmux {
 		mux_0 {
 			pins = "gpio64";
@@ -210,5 +234,18 @@
 &pcie0 {
 	perst-gpio = <&tlmm 60 1>;
 
+	status = "ok";
+};
+
+&ssphy_0 {
+	status = "ok";
+};
+
+&qusb_phy_0 {
+	status = "ok";
+};
+
+&usb3 {
+	usb-phy = <&usb3h0_phy>;
 	status = "ok";
 };

@@ -1361,7 +1361,7 @@ static int qcom_pcie_post_init_2_9_0(struct qcom_pcie *pcie)
 			PCI_EXP_DEVCTL2);
 
 	writel(PCIE_CAP_CURR_DEEMPHASIS | SPEED_GEN3,
-			pci->dbi_base + offset + PCI_EXP_DEVCTL2);
+			pci->dbi_base + offset + PCI_EXP_LNKCTL2);
 
 	for (i = 0;i < 256;i++)
 		writel(0x0, pcie->parf + PCIE20_PARF_BDF_TO_SID_TABLE_N

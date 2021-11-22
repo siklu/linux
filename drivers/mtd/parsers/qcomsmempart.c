@@ -64,6 +64,15 @@ static int parse_qcomsmem_part(struct mtd_info *mtd,
 	struct smem_flash_ptable *ptable;
 	struct mtd_partition *parts;
 	char *name, *c;
+	uint32_t block_size = mtd->erasesize;
+
+	/*
+	 * We have no access to true hardware block size when 4K sectors
+	 * support is enabled. Use 64K as this is the most common size.
+	 */
+	if (IS_ENABLED(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
+			&& mtd->type == MTD_NORFLASH)
+		block_size = 64 * 1024;
 
 	if (IS_ENABLED(CONFIG_MTD_SPI_NOR_USE_4K_SECTORS)
 			&& mtd->type == MTD_NORFLASH) {

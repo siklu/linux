@@ -21,6 +21,9 @@
 #define PCF8523_CONTROL2_AF BIT(3)
 
 #define PCF8523_REG_CONTROL3 0x02
+#define PCF8523_CONTROL3_PM_VDD (1 << 6) /* switch-over disabled */
+#define PCF8523_CONTROL3_PM_DSM (1 << 5) /* direct switching mode */
+#define PCF8523_CONTROL3_PM_MASK 0xe0
 #define PCF8523_CONTROL3_PM  GENMASK(7, 5)
 #define PCF8523_PM_STANDBY   0x7
 #define PCF8523_CONTROL3_BLF BIT(2) /* battery low bit, read-only */
@@ -328,8 +331,22 @@ static int pcf8523_rtc_ioctl(struct device *dev, unsigned int cmd,
 		if (value & PCF8523_SECONDS_OS)
 			flags |= RTC_VL_DATA_INVALID;
 
-		return put_user(flags, (unsigned int __user *)arg);
+		if (ret & PCF8523_CONTROL3_BLF)
+			flags |= RTC_VL_BACKUP_LOW;
 
+		if (ret & PCF8523_CONTROL3_BSF)
+			flags |= RTC_VL_BACKUP_SWITCH;
+
+
+		return put_user(flags, (unsigned int __user *)arg);
+	case RTC_VL_CLR:
+		ret = regmap_read(pcf8523->regmap, PCF8523_REG_CONTROL3, &value);
+		if (ret < 0)
+			return ret;
+
+		value &= ~PCF8523_CONTROL3_BSF;
+
+		return regmap_write(pcf8523->regmap, PCF8523_REG_CONTROL3, value);
 	default:
 		return -ENOIOCTLCMD;
 	}

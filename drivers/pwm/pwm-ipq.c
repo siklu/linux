@@ -103,6 +103,7 @@ static int ipq_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	unsigned int pre_div, pwm_div, best_pre_div, best_pwm_div;
 	unsigned long rate = clk_get_rate(ipq_chip->clk);
 	u64 period_ns, duty_ns, period_rate;
+	u64 min_diff;
 
 	if (state->polarity != PWM_POLARITY_NORMAL)
 		return -EINVAL;
@@ -123,12 +124,12 @@ static int ipq_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	/* Initial pre_div value such that pwm_div < IPQ_PWM_MAX_DIV */
 	pre_div = div64_u64(period_rate,
 			(u64)NSEC_PER_SEC * (IPQ_PWM_MAX_DIV + 1));
+	min_diff = period_rate;
 
 	for (; pre_div <= IPQ_PWM_MAX_DIV; pre_div++) {
 		long long diff;
-		u64 min_diff = period_rate;
 
-		pwm_div = div64_u64(period_rate,
+		pwm_div = DIV64_U64_ROUND_UP(period_rate,
 				(u64)NSEC_PER_SEC * (pre_div + 1));
 		/* pwm_div is unsigned; the check below catches underflow */
 		pwm_div--;

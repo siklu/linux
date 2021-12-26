@@ -246,7 +246,9 @@ static int qcom_pcie_establish_link(struct qcom_pcie *pcie)
 	if (pcie->ops->ltssm_enable)
 		pcie->ops->ltssm_enable(pcie);
 
-	return dw_pcie_wait_for_link(pci);
+	dw_pcie_wait_for_link(pci);
+
+	return 0;
 }
 
 static void qcom_pcie_2_1_0_ltssm_enable(struct qcom_pcie *pcie)

@@ -1,0 +1,373 @@
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright (C) 2015 Freescale Semiconductor, Inc.
+
+/dts-v1/;
+
+#include "imx6ull.dtsi"
+
+/ {
+	model = "Siklu EH8010";
+	compatible = "fsl,imx6ull";
+
+	aliases {
+		mdio-gpio0 = &mdio0;
+	};
+
+	chosen {
+		stdout-path = &uart1;
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x20000000>;
+	};
+
+	reserved-memory {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		ranges;
+
+		linux,cma {
+			compatible = "shared-dma-pool";
+			reusable;
+			size = <0x14000000>;
+			linux,cma-default;
+		};
+	};
+
+	reg_usb_otg2_vbus: regulator-usb-otg {
+		compatible = "regulator-fixed";
+		regulator-name = "usb_otg2_vbus";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+	};
+
+	reg_vref_3v3: regulator-vref-3v3 {
+		compatible = "regulator-fixed";
+		regulator-name = "vref-3v3";
+		regulator-min-microvolt = <3300000>;
+		regulator-max-microvolt = <3300000>;
+	};
+
+	mdio0: bitbang-mdio {
+		compatible = "virtual,mdio-gpio";
+		pinctrl-names = "default";
+		pinctrl-0 = <&pinctrl_mdio_bitbang>;
+		gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>, /* MDC */
+			<&gpio1 6 GPIO_ACTIVE_HIGH>; /* MDIO */
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		switch0@0 {
+			compatible = "marvell,mv88e6190";
+			reg = <0>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+					label = "cpu";
+					ethernet = <&fec1>;
+					phy-mode = "rmii";
+					fixed-link {
+						speed = <100>;
+						full-duplex;
+					};
+				};
+
+				port@5 {
+					reg = <5>;
+					label = "eth_1g";
+				};
+
+				port@9 {
+					reg = <9>;
+					label = "rf_modem";
+					phy-mode = "10gbase-r";
+					phy-handle = <&phy1>;
+				};
+
+				port@10 {
+					reg = <10>;
+					label = "eth_10g";
+					phy-mode = "10gbase-r";
+					phy-handle = <&phy0>;
+				};
+			};
+		};
+	};
+};
+
+&clks {
+	assigned-clocks = <&clks IMX6UL_CLK_PLL4_AUDIO_DIV>;
+	assigned-clock-rates = <786432000>;
+};
+
+&i2c2 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c2>;
+	status = "okay";
+};
+
+&fec1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_enet1>;
+	phy-mode = "rmii";
+	status = "okay";
+	fixed-link {
+		speed = <100>;
+		full-duplex;
+	};
+
+	mdio {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "okay";
+
+		phy0: ethernet-phy@2 {
+			compatible = "ethernet-phy-ieee802.3-c45";
+			reg = <2>;
+		};
+
+		phy1: ethernet-phy@4 {
+			compatible = "ethernet-phy-ieee802.3-c45";
+			reg = <4>;
+		};
+	};
+};
+
+&gpmi {
+	status = "okay";
+};
+
+&ecspi1 {
+	cs-gpios = <
+		&gpio4 26 GPIO_ACTIVE_LOW
+		&gpio3 10 GPIO_ACTIVE_LOW
+		&gpio3 11 GPIO_ACTIVE_LOW
+		&gpio3 12 GPIO_ACTIVE_LOW
+	>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_ecspi1>;
+	status = "okay";
+};
+
+&ecspi2 {
+	cs-gpios = <
+		&gpio4 22 GPIO_ACTIVE_LOW
+		&gpio3 2 GPIO_ACTIVE_LOW
+	>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_ecspi2>;
+	status = "okay";
+
+	cpld@1 {
+		compatible = "siklu,eh8010-cpld";
+		spi-max-frequency = <10000000>;
+		reg = <1>;
+
+		cpld_wd: watchdog {
+			compatible = "siklu,eh8010-cpld-wdt";
+		};
+	};
+};
+
+&ecspi3 {
+	cs-gpios = <
+		&gpio1 20 GPIO_ACTIVE_HIGH
+	>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_ecspi3>;
+	status = "okay";
+
+	spi-flash@0 {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+
+		partition@0 {
+			reg = <0x0 0x200000>;
+			label = "u-boot";
+			read-only;
+		};
+
+		partition@1f0000 {
+			reg = <0x1f0000 0x10000>;
+			label = "seeprom";
+		};
+	};
+};
+
+&i2c1 {
+	clock-frequency = <100000>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_i2c1>;
+	status = "okay";
+
+	rtc: pcf8523@68 {
+		compatible = "nxp,pcf8523";
+		reg = <0x68>;
+	};
+
+	tmp421@4c {
+		compatible = "ti,tmp421";
+		reg = <0x4c>;
+	};
+};
+
+&snvs_poweroff {
+	status = "okay";
+};
+
+&snvs_pwrkey {
+	status = "okay";
+};
+
+&uart1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart1>;
+	status = "okay";
+};
+
+&uart3 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart3>;
+	status = "okay";
+};
+
+&uart4 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_uart4>;
+	status = "okay";
+};
+
+&usbotg2 {
+	vbus-supply = <&reg_usb_otg2_vbus>;
+	dr_mode = "host";
+	disable-over-current;
+	status = "okay";
+};
+
+&usbphy2 {
+	fsl,tx-d-cal = <106>;
+};
+
+&adc1 {
+	pinctrl-names = "default";
+	pinctrl-0 = <&pinctrl_adc1>;
+	vref-supply = <&reg_vref_3v3>;
+	num-channels = <8>;
+	status = "okay";
+};
+
+&iomuxc {
+	pinctrl-names = "default";
+
+	pinctrl_enet1: enet1grp {
+		fsl,pins = <
+			MX6UL_PAD_ENET1_RX_EN__ENET1_RX_EN	0x1b0b0
+			MX6UL_PAD_ENET1_RX_ER__ENET1_RX_ER	0x1b0b0
+			MX6UL_PAD_ENET1_RX_DATA0__ENET1_RDATA00	0x1b0b0
+			MX6UL_PAD_ENET1_RX_DATA1__ENET1_RDATA01	0x1b0b0
+			MX6UL_PAD_ENET1_TX_EN__ENET1_TX_EN	0x1b0b0
+			MX6UL_PAD_ENET1_TX_DATA0__ENET1_TDATA00	0x1b0b0
+			MX6UL_PAD_ENET1_TX_DATA1__ENET1_TDATA01	0x1b0b0
+			MX6UL_PAD_ENET1_TX_CLK__ENET1_REF_CLK1	0x4001b031
+			MX6UL_PAD_ENET2_RX_DATA0__ENET1_MDIO	0xb829
+			MX6UL_PAD_ENET2_RX_DATA1__ENET1_MDC	0xb029
+		>;
+	};
+
+	pinctrl_mdio_bitbang: mdio0grp {
+		fsl,pins = <
+			MX6UL_PAD_GPIO1_IO06__GPIO1_IO06	0x1b8b0
+			MX6UL_PAD_GPIO1_IO07__GPIO1_IO07	0x1b0b0
+		>;
+	};
+
+	pinctrl_i2c1: i2c1grp {
+		fsl,pins = <
+			MX6UL_PAD_CSI_PIXCLK__I2C1_SCL	0x4001b8b0
+			MX6UL_PAD_CSI_MCLK__I2C1_SDA	0x4001b8b0
+		>;
+	};
+
+	pinctrl_i2c2: i2c2grp {
+		fsl,pins = <
+			MX6UL_PAD_CSI_HSYNC__I2C2_SCL	0x4001b8b0
+			MX6UL_PAD_CSI_VSYNC__I2C2_SDA	0x4001b8b0
+		>;
+	};
+
+	pinctrl_uart1: uart1grp {
+		fsl,pins = <
+			MX6UL_PAD_UART1_TX_DATA__UART1_DCE_TX 0x1b0b1
+			MX6UL_PAD_UART1_RX_DATA__UART1_DCE_RX 0x1b0b1
+		>;
+	};
+
+	pinctrl_uart3: uart3grp {
+		fsl,pins = <
+			MX6UL_PAD_UART3_TX_DATA__UART3_DCE_TX 0x1b0b1
+			MX6UL_PAD_UART3_RX_DATA__UART3_DCE_RX 0x1b0b1
+		>;
+	};
+
+	pinctrl_uart4: uart4grp {
+		fsl,pins = <
+			MX6UL_PAD_UART4_TX_DATA__UART4_DCE_TX 0x1b0b1
+			MX6UL_PAD_UART4_RX_DATA__UART4_DCE_RX 0x1b0b1
+		>;
+	};
+
+	pinctrl_adc1: adc1grp {
+		fsl,pins = <
+			MX6UL_PAD_GPIO1_IO00__GPIO1_IO00        0xb0
+			MX6UL_PAD_GPIO1_IO01__GPIO1_IO01        0xb0
+			MX6UL_PAD_GPIO1_IO02__GPIO1_IO02        0xb0
+			MX6UL_PAD_GPIO1_IO03__GPIO1_IO03        0xb0
+			MX6UL_PAD_GPIO1_IO04__GPIO1_IO04        0xb0
+			MX6UL_PAD_GPIO1_IO05__GPIO1_IO05        0xb0
+			/* skip GPIO1_IO06 and GPIO1_IO07       */
+			MX6UL_PAD_GPIO1_IO08__GPIO1_IO08        0xb0
+			MX6UL_PAD_GPIO1_IO09__GPIO1_IO09        0xb0
+		>;
+	};
+
+	pinctrl_ecspi1: ecspi1grp {
+		fsl,pins = <
+			MX6UL_PAD_CSI_DATA06__ECSPI1_MOSI 0x10b0
+			MX6UL_PAD_CSI_DATA07__ECSPI1_MISO 0x10b0
+			MX6UL_PAD_CSI_DATA04__ECSPI1_SCLK 0x10b0
+			MX6UL_PAD_CSI_DATA05__GPIO4_IO26  0x10b0
+			MX6UL_PAD_LCD_DATA05__GPIO3_IO10  0x10b0
+			MX6UL_PAD_LCD_DATA06__GPIO3_IO11  0x10b0
+			MX6UL_PAD_LCD_DATA07__GPIO3_IO12  0x10b0
+		>;
+	};
+
+	pinctrl_ecspi2: ecspi2grp {
+		fsl,pins = <
+			MX6UL_PAD_CSI_DATA00__ECSPI2_SCLK 0x10b0
+			MX6UL_PAD_CSI_DATA02__ECSPI2_MOSI 0x10b0
+			MX6UL_PAD_CSI_DATA03__ECSPI2_MISO 0x10b0
+			MX6UL_PAD_CSI_DATA01__GPIO4_IO22  0x10b0
+			MX6UL_PAD_LCD_HSYNC__GPIO3_IO02   0x10b0
+		>;
+	};
+
+	pinctrl_ecspi3: ecspi3grp {
+		fsl,pins = <
+			MX6UL_PAD_UART2_CTS_B__ECSPI3_MOSI   0x10b0
+			MX6UL_PAD_UART2_RTS_B__ECSPI3_MISO   0x10b0
+			MX6UL_PAD_UART2_RX_DATA__ECSPI3_SCLK 0x10b0
+			MX6UL_PAD_UART2_TX_DATA__GPIO1_IO20  0x10b0
+		>;
+	};
+};

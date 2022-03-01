@@ -216,6 +216,10 @@ config QCOM_SCM_DOWNLOAD_MODE_DEFAULT
 
 	  Say Y here to enable "download mode" by default.
 
+config SIKLU_CPLD
+	bool "Siklu EH8010 CPLD interface"
+	depends on SPI
+
 config SYSFB
 	bool
 	default y

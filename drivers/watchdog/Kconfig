@@ -349,6 +349,11 @@ config SL28CPLD_WATCHDOG
 	  To compile this driver as a module, choose M here: the
 	  module will be called sl28cpld_wdt.
 
+config SIKLU_CPLD_WATCHDOG
+	bool "Siklu EH8010 CPLD Watchdog"
+	depends on SIKLU_CPLD
+	select WATCHDOG_CORE
+
 # ALPHA Architecture
 
 # ARM Architecture

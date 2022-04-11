@@ -63,7 +63,8 @@ static DECLARE_BITMAP(minors, N_SPI_MINORS);
 				| SPI_LSB_FIRST | SPI_3WIRE | SPI_LOOP \
 				| SPI_NO_CS | SPI_READY | SPI_TX_DUAL \
 				| SPI_TX_QUAD | SPI_TX_OCTAL | SPI_RX_DUAL \
-				| SPI_RX_QUAD | SPI_RX_OCTAL)
+				| SPI_RX_QUAD | SPI_RX_OCTAL \
+				| SPI_RX_CPHA_FLIP)
 
 struct spidev_data {
 	dev_t			devt;

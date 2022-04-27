@@ -6681,6 +6681,8 @@ static int mvpp2_mac_prepare(struct phylink_config *config, unsigned int mode,
 		}
 	}
 
+	mdelay(10);
+
 	return 0;
 }
 

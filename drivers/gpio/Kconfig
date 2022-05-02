@@ -551,6 +551,10 @@ config GPIO_SIFIVE
 	help
 	  Say yes here to support the GPIO device on SiFive SoCs.
 
+config GPIO_SIKLU_CPLD
+	bool "Siklu EH8010 CPLD GPIO controller"
+	depends on SIKLU_CPLD
+
 config GPIO_SIOX
 	tristate "SIOX GPIO support"
 	depends on SIOX

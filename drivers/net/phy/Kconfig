@@ -307,6 +307,11 @@ config TERANETICS_PHY
 	help
 	  Currently supports the Teranetics TN2020
 
+config TLK10031_PHY
+	tristate "TI TLK10031 PHY"
+	help
+	  Driver for the TI TLK10031 transceiver.
+
 config DP83822_PHY
 	tristate "Texas Instruments DP83822/825/826 PHYs"
 	help

@@ -7,11 +7,18 @@
 
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
+#include <linux/debugfs.h>
 #include <linux/spi/spi.h>
 #include <linux/firmware/siklu-cpld.h>
 
 #define CPLD_WRITE	0x02
 #define CPLD_READ	0x0b
+
+struct debugfs_cpld_reg {
+	char *name;
+	int reg_id;
+	struct device *cpld_dev;
+};
 
 int siklu_cpld_reg_write(struct device *dev, u8 reg, u8 val)
 {
@@ -36,8 +43,52 @@ int siklu_cpld_reg_read(struct device *dev, u8 reg, u8 *val)
 	return spi_write_then_read(spi, tx_buf, sizeof(tx_buf), val, 1);
 }
 
+static int cpld_reg_get(void *data, u64 *val)
+{
+	struct debugfs_cpld_reg *dc_reg = data;
+	u8 reg_val;
+	int ret;
+
+	ret = siklu_cpld_reg_read(dc_reg->cpld_dev, dc_reg->reg_id, &reg_val);
+	*val = reg_val;
+
+	return ret;
+}
+
+static int cpld_reg_set(void *data, u64 val)
+{
+	struct debugfs_cpld_reg *dc_reg = data;
+
+	return siklu_cpld_reg_write(dc_reg->cpld_dev, dc_reg->reg_id, (u8) val);
+}
+
+DEFINE_DEBUGFS_ATTRIBUTE(fops_cpld_reg, cpld_reg_get, cpld_reg_set,
+		"0x%02llx\n");
+
+static struct debugfs_cpld_reg siklu_cpld_regs[] = {
+	{ "cfg_sel_misc", R_CPLD_LOGIC_CFG_SEL_MISC, },
+};
+
+static void siklu_cpld_debugfs_init(struct device *dev)
+{
+	struct dentry *debugfs;
+	int i;
+
+	debugfs = debugfs_create_dir("siklu_cpld", NULL);
+	if (IS_ERR(debugfs))
+		return;
+
+	for (i = 0; i < ARRAY_SIZE(siklu_cpld_regs); i++) {
+		siklu_cpld_regs[i].cpld_dev = dev;
+		debugfs_create_file_unsafe(siklu_cpld_regs[i].name, 0600,
+				debugfs, &siklu_cpld_regs[i], &fops_cpld_reg);
+	}
+}
+
 static int siklu_cpld_probe(struct spi_device *spi)
 {
+	siklu_cpld_debugfs_init(&spi->dev);
+
 	return devm_of_platform_populate(&spi->dev);
 }
 

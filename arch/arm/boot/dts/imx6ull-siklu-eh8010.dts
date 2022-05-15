@@ -173,6 +173,10 @@
 		cpld_wd: watchdog {
 			compatible = "siklu,eh8010-cpld-wdt";
 		};
+
+		reset {
+			compatible = "siklu,eh8010-cpld-reset";
+		};
 	};
 };
 

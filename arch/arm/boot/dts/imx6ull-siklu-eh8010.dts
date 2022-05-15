@@ -154,6 +154,26 @@
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_ecspi1>;
 	status = "okay";
+
+	rfic@0 {
+		compatible = "siklu,rfic";
+		reg = <0>;
+	};
+
+	rfic@1 {
+		compatible = "siklu,rfic";
+		reg = <1>;
+	};
+
+	pic@2 {
+		compatible = "siklu,pic-lna";
+		reg = <2>;
+	};
+
+	pic@3 {
+		compatible = "siklu,pic-lna";
+		reg = <3>;
+	};
 };
 
 &ecspi2 {

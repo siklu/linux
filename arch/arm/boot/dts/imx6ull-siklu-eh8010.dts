@@ -197,6 +197,10 @@
 		reset {
 			compatible = "siklu,eh8010-cpld-reset";
 		};
+
+		gpio {
+			compatible = "siklu,eh8010-cpld-gpio";
+		};
 	};
 };
 

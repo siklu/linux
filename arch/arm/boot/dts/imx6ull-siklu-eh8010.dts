@@ -178,7 +178,7 @@
 
 &ecspi3 {
 	cs-gpios = <
-		&gpio1 20 GPIO_ACTIVE_HIGH
+		&gpio1 20 GPIO_ACTIVE_LOW
 	>;
 	pinctrl-names = "default";
 	pinctrl-0 = <&pinctrl_ecspi3>;

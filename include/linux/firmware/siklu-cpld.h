@@ -36,6 +36,11 @@ struct device;
 #define R_CPLD_LOGIC_SER_EEPROM_IF	0x27
 #define R_CPLD_LOGIC_SER_EEPROM_WRITE_DATA 0x2e
 #define R_CPLD_LOGIC_SER_EEPROM_CMD	0x2f
+#define R_CPLD_LOGIC_SER_EEPROM_ADDR_LSB	0x30
+#define R_CPLD_LOGIC_SER_EEPROM_ADDR_MSB	0x31
+#define R_CPLD_LOGIC_SER_EEPROM_READ_DATA	0x32
+#define R_CPLD_LOGIC_SER_EEPROM_STATUS		0x33
+#define R_CPLD_LOGIC_SER_EEPROM_CTL		0x34
 
 extern int siklu_cpld_reg_write(struct device *dev, u8 reg, u8 val);
 extern int siklu_cpld_reg_read(struct device *dev, u8 reg, u8 *val);

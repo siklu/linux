@@ -66,7 +66,13 @@ DEFINE_DEBUGFS_ATTRIBUTE(fops_cpld_reg, cpld_reg_get, cpld_reg_set,
 		"0x%02llx\n");
 
 static struct debugfs_cpld_reg siklu_cpld_regs[] = {
-	{ "cfg_sel_misc", R_CPLD_LOGIC_CFG_SEL_MISC, },
+	{ "cfg_sel_misc",		R_CPLD_LOGIC_CFG_SEL_MISC },
+	{ "ser_eeprom_addr_lsb",	R_CPLD_LOGIC_SER_EEPROM_ADDR_LSB, },
+	{ "ser_eeprom_addr_msb",	R_CPLD_LOGIC_SER_EEPROM_ADDR_MSB, },
+	{ "ser_eeprom_status",		R_CPLD_LOGIC_SER_EEPROM_STATUS },
+	{ "ser_eeprom_cmd",		R_CPLD_LOGIC_SER_EEPROM_CMD },
+	{ "ser_eeprom_ctl",		R_CPLD_LOGIC_SER_EEPROM_CTL },
+	{ "ser_eeprom_read_data",	R_CPLD_LOGIC_SER_EEPROM_READ_DATA },
 };
 
 static void siklu_cpld_debugfs_init(struct device *dev)

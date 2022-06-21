@@ -119,6 +119,9 @@ config I2C_SLAVE
 
 if I2C_SLAVE
 
+config I2C_SLAVE_ACM
+	tristate "I2C K60 ACM slave driver"
+
 config I2C_SLAVE_EEPROM
 	tristate "I2C eeprom slave driver"
 	help

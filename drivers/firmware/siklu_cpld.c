@@ -66,6 +66,7 @@ DEFINE_DEBUGFS_ATTRIBUTE(fops_cpld_reg, cpld_reg_get, cpld_reg_set,
 		"0x%02llx\n");
 
 static struct debugfs_cpld_reg siklu_cpld_regs[] = {
+	{ "reset_control",		R_CPLD_LOGIC_RESET_CONTROL },
 	{ "cfg_sel_misc",		R_CPLD_LOGIC_CFG_SEL_MISC },
 	{ "ser_eeprom_addr_lsb",	R_CPLD_LOGIC_SER_EEPROM_ADDR_LSB, },
 	{ "ser_eeprom_addr_msb",	R_CPLD_LOGIC_SER_EEPROM_ADDR_MSB, },

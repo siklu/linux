@@ -571,7 +571,9 @@ static unsigned long poll_jiffies;
 static unsigned int sfp_gpio_get_state(struct sfp *sfp)
 {
 	unsigned int i, state, v;
+	int repeat = 10;
 
+again:
 	for (i = state = 0; i < GPIO_MAX; i++) {
 		if (gpio_flags[i] != GPIOD_IN || !sfp->gpio[i])
 			continue;
@@ -579,6 +581,15 @@ static unsigned int sfp_gpio_get_state(struct sfp *sfp)
 		v = gpiod_get_value_cansleep(sfp->gpio[i]);
 		if (v)
 			state |= BIT(i);
+	}
+
+	/* Trivial debounce. When no state change is detected, wait for up to
+	 * a limited bound time interval for the signal state to settle.
+	 */
+	if (state == sfp->state && repeat > 0) {
+		udelay(10);
+		repeat--;
+		goto again;
 	}
 
 	return state;

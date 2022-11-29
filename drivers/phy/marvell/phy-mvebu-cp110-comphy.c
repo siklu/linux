@@ -80,7 +80,7 @@
 #define MVEBU_COMPHY_TX_SLEW_RATE(n)		(0x974 + (n) * 0x1000)
 #define     MVEBU_COMPHY_TX_SLEW_RATE_EMPH(n)	((n) << 5)
 #define     MVEBU_COMPHY_TX_SLEW_RATE_SLC(n)	((n) << 10)
-#define MVEBU_COMPHY_TX_AMP_EMP(n)		(0x978 + (n) * 0x1000)
+#define MVEBU_COMPHY_TX_EMP_AMP(n)		(0x978 + (n) * 0x1000)
 #define     MVEBU_COMPHY_TX_EMPH_AMP_FORCE		BIT(8)
 #define MVEBU_COMPHY_DTL_CTRL(n)		(0x984 + (n) * 0x1000)
 #define     MVEBU_COMPHY_DTL_CTRL_DTL_FLOOP_EN	BIT(2)
@@ -727,9 +727,9 @@ static int mvebu_comphy_power_on_emp_workaround(struct phy *phy) {
 	struct mvebu_comphy_lane *lane = phy_get_drvdata(phy);
 	struct mvebu_comphy_priv *priv = lane->priv;
 	u32 val;
-	val = readl(priv->base + MVEBU_COMPHY_TX_AMP_EMP(lane->id));
+	val = readl(priv->base + MVEBU_COMPHY_TX_EMP_AMP(lane->id));
 	val |= MVEBU_COMPHY_TX_EMPH_AMP_FORCE;
-	writel(val, priv->base + MVEBU_COMPHY_TX_AMP_EMP(lane->id));
+	writel(val, priv->base + MVEBU_COMPHY_TX_EMP_AMP(lane->id));
 	return 0;
 }
 

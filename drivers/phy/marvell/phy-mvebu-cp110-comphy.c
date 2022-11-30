@@ -855,7 +855,7 @@ out:
 		&& lane->mode == PHY_MODE_ETHERNET 
 		&& lane->submode == PHY_INTERFACE_MODE_10GBASER 
 		&& lane->enable_emp_quirk) {
-		dev_warn(priv->dev, "Performing emphesis workaround on PHY %d", lane->id);
+		dev_warn(priv->dev, "Performing emphasis workaround on PHY %d", lane->id);
 		ret = mvebu_comphy_power_on_emp_workaround(phy);
 	}
 

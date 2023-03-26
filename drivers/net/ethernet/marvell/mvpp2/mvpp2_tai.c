@@ -32,6 +32,8 @@
  *
  * Consequently, we support none of these.
  */
+#include <linux/pinctrl/consumer.h>
+#include <linux/ptp_clock.h>
 #include <linux/io.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/slab.h>
@@ -53,6 +55,10 @@
 #define TCSR_CAPTURE_1_VALID		BIT(1)
 #define TCSR_CAPTURE_0_VALID		BIT(0)
 
+#define MVPP2_PINCTRL_EXTTS_STATE		"extts"
+#define MAX_PINS 1
+#define EXTTS_PERIOD_MS 95
+
 struct mvpp2_tai {
 	struct ptp_clock_info caps;
 	struct ptp_clock *ptp_clock;
@@ -62,6 +68,11 @@ struct mvpp2_tai {
 	/* This timestamp is updated every two seconds */
 	struct timespec64 stamp;
 	u16 poll_worker_refcount;
+	bool extts_enabled:1;
+	struct pinctrl *extts_pinctrl;
+	struct pinctrl_state *default_pinctrl_state;
+	struct pinctrl_state *extts_pinctrl_state;
+	struct ptp_pin_desc pin_config[MAX_PINS];
 };
 
 static void mvpp2_tai_modify(void __iomem *reg, u32 mask, u32 set)
@@ -102,6 +113,25 @@ static void mvpp22_tai_read_ts(struct timespec64 *ts, void __iomem *base)
 	readl_relaxed(base + 24);
 }
 
+static int mvpp22_tai_try_read_ts(struct timespec64 *ts, void __iomem *base)
+{
+	int ret = 0;
+	long tcsr = readl(base + MVPP22_TAI_TCSR);
+
+	if (tcsr & TCSR_CAPTURE_1_VALID) {
+		mvpp22_tai_read_ts(ts, base + MVPP22_TAI_TCV1_SEC_HIGH);
+		ret = 0;
+	} else if (tcsr & TCSR_CAPTURE_0_VALID) {
+		mvpp22_tai_read_ts(ts, base + MVPP22_TAI_TCV0_SEC_HIGH);
+		ret = 0;
+	} else {
+		/* We don't seem to have a reading... */
+		ret = -EBUSY;
+	}
+
+	return ret;
+}
+
 static void mvpp2_tai_write_tlv(const struct timespec64 *ts, u32 frac,
 			        void __iomem *base)
 {
@@ -116,14 +146,17 @@ static void mvpp2_tai_write_tlv(const struct timespec64 *ts, u32 frac,
 
 static void mvpp2_tai_op(u32 op, void __iomem *base)
 {
+	u32 reg_val;
+
+	reg_val = mvpp2_tai_read(base + MVPP22_TAI_TCFCR0);
 	/* Trigger the operation. Note that an external unmaskable
 	 * event on PTP_EVENT_REQ will also trigger this action.
 	 */
 	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0,
 			 TCFCR0_TCF_MASK | TCFCR0_TCF_TRIGGER,
 			 op | TCFCR0_TCF_TRIGGER);
-	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0, TCFCR0_TCF_MASK,
-			 TCFCR0_TCF_NOP);
+	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0, TCFCR0_TCF_MASK | TCFCR0_TCF_TRIGGER,
+			 reg_val);
 }
 
 /* The adjustment has a range of +0.5ns to -0.5ns in 2^32 steps, so has units
@@ -240,8 +273,11 @@ static int mvpp22_tai_gettimex64(struct ptp_clock_info *ptp,
 	struct mvpp2_tai *tai = ptp_to_tai(ptp);
 	unsigned long flags;
 	void __iomem *base;
-	u32 tcsr;
 	int ret;
+	u32 reg_val;
+
+	if (tai->extts_enabled)
+		return -EBUSY;
 
 	base = tai->base;
 	spin_lock_irqsave(&tai->lock, flags);
@@ -250,25 +286,17 @@ static int mvpp22_tai_gettimex64(struct ptp_clock_info *ptp,
 	 * triggered event, and an external event on PTP_EVENT_REQ. So this
 	 * is incompatible with external use of PTP_EVENT_REQ.
 	 */
+	reg_val = mvpp2_tai_read(base + MVPP22_TAI_TCFCR0);
 	ptp_read_system_prets(sts);
 	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0,
 			 TCFCR0_TCF_MASK | TCFCR0_TCF_TRIGGER,
 			 TCFCR0_TCF_CAPTURE | TCFCR0_TCF_TRIGGER);
 	ptp_read_system_postts(sts);
-	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0, TCFCR0_TCF_MASK,
-			 TCFCR0_TCF_NOP);
+	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0,
+			 TCFCR0_TCF_MASK | TCFCR0_TCF_TRIGGER,
+			 reg_val);
 
-	tcsr = readl(base + MVPP22_TAI_TCSR);
-	if (tcsr & TCSR_CAPTURE_1_VALID) {
-		mvpp22_tai_read_ts(ts, base + MVPP22_TAI_TCV1_SEC_HIGH);
-		ret = 0;
-	} else if (tcsr & TCSR_CAPTURE_0_VALID) {
-		mvpp22_tai_read_ts(ts, base + MVPP22_TAI_TCV0_SEC_HIGH);
-		ret = 0;
-	} else {
-		/* We don't seem to have a reading... */
-		ret = -EBUSY;
-	}
+	ret = mvpp22_tai_try_read_ts(ts, base);
 	spin_unlock_irqrestore(&tai->lock, flags);
 
 	return ret;
@@ -280,6 +308,7 @@ static int mvpp22_tai_settime64(struct ptp_clock_info *ptp,
 	struct mvpp2_tai *tai = ptp_to_tai(ptp);
 	unsigned long flags;
 	void __iomem *base;
+	u32 reg_val;
 
 	base = tai->base;
 	spin_lock_irqsave(&tai->lock, flags);
@@ -289,23 +318,48 @@ static int mvpp22_tai_settime64(struct ptp_clock_info *ptp,
 	 * into the TOD counter. Note that an external unmaskable event on
 	 * PTP_EVENT_REQ will also trigger this action.
 	 */
+	reg_val = mvpp2_tai_read(base + MVPP22_TAI_TCFCR0);
 	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0,
 			 TCFCR0_PHASE_UPDATE_ENABLE |
 			 TCFCR0_TCF_MASK | TCFCR0_TCF_TRIGGER,
 			 TCFCR0_TCF_UPDATE | TCFCR0_TCF_TRIGGER);
-	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0, TCFCR0_TCF_MASK,
-			 TCFCR0_TCF_NOP);
+	mvpp2_tai_modify(base + MVPP22_TAI_TCFCR0,
+			 TCFCR0_PHASE_UPDATE_ENABLE |
+			 TCFCR0_TCF_MASK | TCFCR0_TCF_TRIGGER,
+			 reg_val);
+
 	spin_unlock_irqrestore(&tai->lock, flags);
 
 	return 0;
+}
+
+static void do_aux_work_extts(struct mvpp2_tai *tai)
+{
+	struct ptp_clock_event event;
+	int ret;
+
+	ret = mvpp22_tai_try_read_ts(&tai->stamp, tai->base);
+	/* We are not managed to read a TS, try again later */
+	if (ret)
+		return;
+
+	/* Triggered - save timestamp */
+	event.type = PTP_CLOCK_EXTTS;
+	event.index = 0; /* We only have one channel */
+	event.timestamp = timespec64_to_ns(&tai->stamp);
+	ptp_clock_event(tai->ptp_clock, &event);
 }
 
 static long mvpp22_tai_aux_work(struct ptp_clock_info *ptp)
 {
 	struct mvpp2_tai *tai = ptp_to_tai(ptp);
 
-	mvpp22_tai_gettimex64(ptp, &tai->stamp, NULL);
+	if (tai->extts_enabled) {
+		do_aux_work_extts(tai);
+		return msecs_to_jiffies(EXTTS_PERIOD_MS);
+	}
 
+	mvpp22_tai_gettimex64(ptp, &tai->stamp, NULL);
 	return msecs_to_jiffies(2000);
 }
 
@@ -390,6 +444,92 @@ void mvpp22_tai_stop(struct mvpp2_tai *tai)
 	ptp_cancel_worker_sync(tai->ptp_clock);
 }
 
+static void mvpp22_tai_capture_enable(struct mvpp2_tai *tai, bool enable)
+{
+	mvpp2_tai_modify(tai->base + MVPP22_TAI_TCFCR0,
+			 TCFCR0_TCF_MASK,
+			 enable ? TCFCR0_TCF_CAPTURE : TCFCR0_TCF_NOP);
+}
+
+static int mvpp22_tai_req_extts_enable(struct mvpp2_tai *tai,
+				       struct ptp_clock_request *rq, int on)
+{
+	u8 index = rq->extts.index;
+	int ret = 0;
+
+	if (!tai->extts_pinctrl)
+		return -EINVAL;
+
+	/* Reject requests with unsupported flags */
+	if (rq->extts.flags & ~(PTP_ENABLE_FEATURE |
+				PTP_RISING_EDGE |
+				PTP_FALLING_EDGE |
+				PTP_STRICT_FLAGS))
+		return -EOPNOTSUPP;
+
+	/* Reject requests to enable time stamping on falling edge */
+	if ((rq->extts.flags & PTP_ENABLE_FEATURE) &&
+	    (rq->extts.flags & PTP_FALLING_EDGE))
+		return -EOPNOTSUPP;
+
+	if (index >= MAX_PINS)
+		return -EINVAL;
+
+	if (on)
+		ret = pinctrl_select_state(tai->extts_pinctrl, tai->extts_pinctrl_state);
+	else
+		ret = pinctrl_select_state(tai->extts_pinctrl, tai->default_pinctrl_state);
+	if (ret)
+		goto out;
+
+	tai->extts_enabled = on != 0;
+	mvpp22_tai_capture_enable(tai, tai->extts_enabled);
+
+	/* We need to enable the poll worker in order for events to be polled */
+	if (on)
+		mvpp22_tai_start(tai);
+	else
+		mvpp22_tai_stop(tai);
+
+out:
+	return ret;
+}
+
+static int mvpp22_tai_enable(struct ptp_clock_info *ptp,
+			     struct ptp_clock_request *rq, int on)
+{
+	struct mvpp2_tai *tai = ptp_to_tai(ptp);
+	int err = -EOPNOTSUPP;
+	unsigned long flags;
+
+	spin_lock_irqsave(&tai->lock, flags);
+
+	switch (rq->type) {
+	case PTP_CLK_REQ_EXTTS:
+		err = mvpp22_tai_req_extts_enable(tai, rq, on);
+		break;
+	default:
+		break;
+	}
+
+	spin_unlock_irqrestore(&tai->lock, flags);
+	return err;
+}
+
+static int mvpp22_tai_verify_pin(struct ptp_clock_info *ptp, unsigned int pin,
+				 enum ptp_pin_function func, unsigned int chan)
+{
+	switch (func) {
+	case PTP_PF_NONE:
+	case PTP_PF_EXTTS:
+		break;
+	case PTP_PF_PEROUT:
+	case PTP_PF_PHYSYNC:
+		return -1;
+	}
+	return 0;
+}
+
 static void mvpp22_tai_remove(void *priv)
 {
 	struct mvpp2_tai *tai = priv;
@@ -402,12 +542,30 @@ int mvpp22_tai_probe(struct device *dev, struct mvpp2 *priv)
 {
 	struct mvpp2_tai *tai;
 	int ret;
+	int i;
 
 	tai = devm_kzalloc(dev, sizeof(*tai), GFP_KERNEL);
 	if (!tai)
 		return -ENOMEM;
 
 	spin_lock_init(&tai->lock);
+
+	tai->extts_pinctrl = devm_pinctrl_get_select_default(dev);
+	if (!IS_ERR(tai->extts_pinctrl)) {
+		tai->default_pinctrl_state = pinctrl_lookup_state(tai->extts_pinctrl,
+								  PINCTRL_STATE_DEFAULT);
+		tai->extts_pinctrl_state = pinctrl_lookup_state(tai->extts_pinctrl,
+								MVPP2_PINCTRL_EXTTS_STATE);
+
+		if (IS_ERR(tai->default_pinctrl_state) || IS_ERR(tai->extts_pinctrl_state)) {
+			pinctrl_put(tai->extts_pinctrl);
+			tai->extts_pinctrl = NULL;
+			tai->default_pinctrl_state = NULL;
+			tai->extts_pinctrl_state = NULL;
+		}
+	} else {
+		tai->extts_pinctrl = NULL;
+	}
 
 	tai->base = priv->iface_base;
 
@@ -444,12 +602,26 @@ int mvpp22_tai_probe(struct device *dev, struct mvpp2 *priv)
 
 	tai->caps.owner = THIS_MODULE;
 	strscpy(tai->caps.name, "Marvell PP2.2", sizeof(tai->caps.name));
+	tai->caps.n_ext_ts = MAX_PINS;
+	tai->caps.n_pins = MAX_PINS;
 	tai->caps.max_adj = mvpp22_calc_max_adj(tai);
 	tai->caps.adjfine = mvpp22_tai_adjfine;
 	tai->caps.adjtime = mvpp22_tai_adjtime;
 	tai->caps.gettimex64 = mvpp22_tai_gettimex64;
 	tai->caps.settime64 = mvpp22_tai_settime64;
 	tai->caps.do_aux_work = mvpp22_tai_aux_work;
+	tai->caps.enable = mvpp22_tai_enable;
+	tai->caps.verify = mvpp22_tai_verify_pin;
+	tai->caps.pin_config = tai->pin_config;
+
+	for (i = 0; i < tai->caps.n_pins; ++i) {
+		struct ptp_pin_desc *ppd = &tai->caps.pin_config[i];
+
+		snprintf(ppd->name, sizeof(ppd->name), "PTP_PULSE_IN%d", i);
+		ppd->index = i;
+		ppd->func = PTP_PF_NONE;
+		ppd->chan = 0;
+	}
 
 	ret = devm_add_action(dev, mvpp22_tai_remove, tai);
 	if (ret)

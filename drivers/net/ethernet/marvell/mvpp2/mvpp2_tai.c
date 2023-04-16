@@ -61,6 +61,7 @@ struct mvpp2_tai {
 	u64 period;		// nanosecond period in 32.32 fixed point
 	/* This timestamp is updated every two seconds */
 	struct timespec64 stamp;
+	u16 poll_worker_refcount;
 };
 
 static void mvpp2_tai_modify(void __iomem *reg, u32 mask, u32 set)
@@ -372,6 +373,10 @@ void mvpp22_tai_start(struct mvpp2_tai *tai)
 {
 	long delay;
 
+	tai->poll_worker_refcount++;
+	if (tai->poll_worker_refcount > 1)
+		return;
+
 	delay = mvpp22_tai_aux_work(&tai->caps);
 
 	ptp_schedule_worker(tai->ptp_clock, delay);
@@ -379,6 +384,9 @@ void mvpp22_tai_start(struct mvpp2_tai *tai)
 
 void mvpp22_tai_stop(struct mvpp2_tai *tai)
 {
+	tai->poll_worker_refcount--;
+	if (tai->poll_worker_refcount)
+		return;
 	ptp_cancel_worker_sync(tai->ptp_clock);
 }
 

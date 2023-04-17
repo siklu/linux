@@ -31,6 +31,21 @@ properties:
   "#size-cells":
     const: 0
 
+  pinctrl-0: true
+  pinctrl-1: true
+
+  pinctrl-names:
+    description:
+      When present, must have one state named "default",
+      and may contain a second name named "extts". The former
+      state sets up pins for ordinary operation without extts
+      support whereas the latter state will enable receiving
+      external timestamp events.
+    minItems: 1
+    items:
+      - const: default
+      - const: extts
+
   clocks:
     minItems: 2
     items:
@@ -241,6 +256,9 @@ examples:
                  <&cp0_clk 1 5>, <&cp0_clk 1 6>, <&cp0_clk 1 18>;
         clock-names = "pp_clk", "gop_clk", "mg_clk", "mg_core_clk", "axi_clk";
         marvell,system-controller = <&cp0_syscon0>;
+        pinctrl-names = "default", "extts";
+        pinctrl-0 = <&cp1_mpp6_gpio>;
+        pinctrl-1 = <&cp1_mpp6_ptp>;
 
         ethernet-port@0 {
             interrupts = <ICU_GRP_NSR 39 IRQ_TYPE_LEVEL_HIGH>,

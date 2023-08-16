@@ -3033,14 +3033,17 @@ static void mvpp2_isr_handle_ptp_queue(struct mvpp2_port *port, int nq)
 		r1 = readl_relaxed(ptp_q + MVPP22_PTP_TX_Q0_R1) & 0xffff;
 		r2 = readl_relaxed(ptp_q + MVPP22_PTP_TX_Q0_R2) & 0xffff;
 
+		netdev_err(port->dev, "### TX TS regs: 0x%.8x 0x%.8x 0x%.8x\n", r0, r1, r2);
+
 		id = (r0 >> 1) & 31;
 
 		skb = queue->skb[id];
 		queue->skb[id] = NULL;
+		u32 ts = r2 << 19 | r1 << 3 | r0 >> 13;
+		mvpp22_tai_tstamp(port->priv->tai, ts, &shhwtstamps);
+		netdev_err(port->dev, "### TX TS %u ts = %lu time = %lld\n",
+				id, ts, shhwtstamps.hwtstamp);
 		if (skb) {
-			u32 ts = r2 << 19 | r1 << 3 | r0 >> 13;
-
-			mvpp22_tai_tstamp(port->priv->tai, ts, &shhwtstamps);
 			skb_tstamp_tx(skb, &shhwtstamps);
 			dev_kfree_skb_any(skb);
 		}
@@ -3812,12 +3815,15 @@ static bool mvpp2_tx_hw_tstamp(struct mvpp2_port *port,
 	 *
 	 * stored in tx descriptor bits 75:64 (11:0) and 191:168 (35:12)
 	 */
-	tx_desc->pp22.ptp_descriptor &=
-		cpu_to_le32(~MVPP22_PTP_DESC_MASK_LOW);
-	tx_desc->pp22.ptp_descriptor |=
-		cpu_to_le32(ptpdesc & MVPP22_PTP_DESC_MASK_LOW);
+	tx_desc->pp22.ptp_descriptor &= cpu_to_le32(~MVPP22_PTP_DESC_MASK_LOW);
+	tx_desc->pp22.ptp_descriptor |= cpu_to_le32(ptpdesc & MVPP22_PTP_DESC_MASK_LOW);
 	tx_desc->pp22.buf_dma_addr_ptp &= cpu_to_le64(~0xffffff0000000000ULL);
 	tx_desc->pp22.buf_dma_addr_ptp |= cpu_to_le64((ptpdesc >> 12) << 40);
+	netdev_err(port->dev,
+			"### TX TS on %s\nptp_desc = 0x%.8x\ndma_desc = 0x%.16llx\n",
+			port->dev->name,
+			tx_desc->pp22.ptp_descriptor,
+			tx_desc->pp22.buf_dma_addr_ptp);
 
 	return true;
 }

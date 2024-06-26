@@ -17,6 +17,7 @@
 #include <linux/of.h>
 #include <linux/mfd/rsmu.h>
 #include <linux/mfd/idt8a340_reg.h>
+#include <linux/clk-provider.h>
 #include <asm/unaligned.h>
 
 #include "ptp_private.h"
@@ -33,6 +34,9 @@ MODULE_LICENSE("GPL");
  * over-rides any automatic selection
  */
 static char *firmware;
+
+static struct clk_hw *clock_hw = NULL;
+
 module_param(firmware, charp, 0);
 
 #define SETTIME_CORRECTION (0)
@@ -2408,6 +2412,28 @@ static void set_default_masks(struct idtcm *idtcm)
 	idtcm->channel[3].output_mask = DEFAULT_OUTPUT_MASK_PLL3;
 }
 
+// add the dpll as a hw clock.
+static int internal_of_clk_add_hw_provider(struct platform_device *pdev)
+{
+	int err;
+
+	if (!pdev || !pdev->dev.parent || !pdev->dev.parent->of_node) {
+		return -EINVAL;
+	}
+
+	clock_hw = clk_hw_register_fixed_rate_with_accuracy(NULL, pdev->dev.parent->of_node->name, NULL,
+						    0, 0 /* rate*/, 0 /*accuracy*/);
+	if (IS_ERR(clock_hw))
+		return -ENOMEM;;
+
+	err = of_clk_add_hw_provider(pdev->dev.parent->of_node, of_clk_hw_simple_get, clock_hw);
+	if (err) {
+		clk_hw_unregister_fixed_rate(clock_hw);
+		return -ENOMEM;;
+	}
+	return 0;
+}
+
 static int idtcm_probe(struct platform_device *pdev)
 {
 	struct rsmu_ddata *ddata = dev_get_drvdata(pdev->dev.parent);
@@ -2468,12 +2494,25 @@ static int idtcm_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, idtcm);
 
+	// add the dpll as a hw clock. this is needed to cause the phys and pcies (modems) components
+	// to be called after the dpll initialization by creating clock dependencies in the 
+	// dts file (DEV-6442)
+	err = internal_of_clk_add_hw_provider(pdev);
+	if (err) {
+		ptp_clock_unregister_all(idtcm);
+		return err;
+	}
+
 	return 0;
 }
 
 static int idtcm_remove(struct platform_device *pdev)
 {
 	struct idtcm *idtcm = platform_get_drvdata(pdev);
+
+	if (clock_hw) {
+		clk_hw_unregister_fixed_rate(clock_hw);
+	}
 
 	idtcm->extts_mask = 0;
 	ptp_clock_unregister_all(idtcm);

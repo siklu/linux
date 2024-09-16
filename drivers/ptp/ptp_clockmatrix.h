@@ -46,8 +46,7 @@
 #define DEFAULT_TOD2_PTP_PLL		(2)
 #define DEFAULT_TOD3_PTP_PLL		(3)
 
-#define PHASE_PULL_IN_THRESHOLD_NS_DEPRECATED	(150000)
-#define PHASE_PULL_IN_THRESHOLD_NS		(15000)
+#define PHASE_PULL_IN_THRESHOLD_NS_DEPRECATED (150000)
 #define TOD_WRITE_OVERHEAD_COUNT_MAX		(2)
 #define TOD_BYTE_COUNT				(11)
 
@@ -118,6 +117,7 @@ struct idtcm {
 	u8			calculate_overhead_flag;
 	s64			tod_write_overhead_ns;
 	ktime_t			start_time;
+	struct clk_hw *clock_hw;
 };
 
 struct idtcm_fwrc {

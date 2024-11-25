@@ -919,7 +919,7 @@ static int cfg80211_wext_giwtxpower(struct net_device *dev,
 		return -EOPNOTSUPP;
 
 	scoped_guard(wiphy, &rdev->wiphy) {
-		err = rdev_get_tx_power(rdev, wdev, &val);
+		err = rdev_get_tx_power(rdev, wdev, 0, &val);
 	}
 	if (err)
 		return err;

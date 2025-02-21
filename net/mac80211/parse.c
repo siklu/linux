@@ -1058,18 +1058,6 @@ ieee802_11_parse_elems_full(struct ieee80211_elems_parse_params *params)
 		multi_link_inner = true;
 	}
 
-		/* consume the space used for non-transmitted profile */
-		elems_parse->scratch_pos += nontx_len;
-
-		non_inherit = cfg80211_find_ext_elem(WLAN_EID_EXT_NON_INHERITANCE,
-						     sub.start, nontx_len);
-	} else {
-		/* must always parse to get elems_parse->ml_basic_elem */
-		non_inherit = ieee80211_prep_mle_link_parse(elems_parse, params,
-							    &sub);
-		multi_link_inner = true;
-	}
-
 	elems_parse->skip_vendor =
 		cfg80211_find_elem(WLAN_EID_VENDOR_SPECIFIC,
 				   sub.start, sub.len);

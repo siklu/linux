@@ -55,6 +55,51 @@ void cfg80211_chandef_create(struct cfg80211_chan_def *chandef,
 }
 EXPORT_SYMBOL(cfg80211_chandef_create);
 
+static u32 cfg80211_get_start_freq(const struct cfg80211_chan_def *chandef,
+				   u32 cf)
+{
+	u32 start_freq, center_freq, bandwidth;
+
+	center_freq = MHZ_TO_KHZ((cf == 1) ?
+			chandef->center_freq1 : chandef->center_freq2);
+	bandwidth = MHZ_TO_KHZ(cfg80211_chandef_get_width(chandef));
+
+	if (bandwidth <= MHZ_TO_KHZ(20))
+		start_freq = center_freq;
+	else
+		start_freq = center_freq - bandwidth / 2 + MHZ_TO_KHZ(10);
+
+	return start_freq;
+}
+
+static u32 cfg80211_get_end_freq(const struct cfg80211_chan_def *chandef,
+				 u32 cf)
+{
+	u32 end_freq, center_freq, bandwidth;
+
+	center_freq = MHZ_TO_KHZ((cf == 1) ?
+			chandef->center_freq1 : chandef->center_freq2);
+	bandwidth = MHZ_TO_KHZ(cfg80211_chandef_get_width(chandef));
+
+	if (bandwidth <= MHZ_TO_KHZ(20))
+		end_freq = center_freq;
+	else
+		end_freq = center_freq + bandwidth / 2 - MHZ_TO_KHZ(10);
+
+	return end_freq;
+}
+
+#define for_each_subchan(chandef, freq, cf)				\
+	for (u32 punctured = chandef->punctured,			\
+	     cf = 1, freq = cfg80211_get_start_freq(chandef, cf);	\
+	     freq <= cfg80211_get_end_freq(chandef, cf);		\
+	     freq += MHZ_TO_KHZ(20),					\
+	     ((cf == 1 && chandef->center_freq2 != 0 &&			\
+	       freq > cfg80211_get_end_freq(chandef, cf)) ?		\
+	      (cf++, freq = cfg80211_get_start_freq(chandef, cf),	\
+	       punctured = 0) : (punctured >>= 1)))			\
+		if (!(punctured & 1))
+
 struct cfg80211_per_bw_puncturing_values {
 	u8 len;
 	const u16 *valid_values;

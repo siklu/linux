@@ -90,7 +90,7 @@ enum {
 
 	/* Vendor2 MMD registers */
 	MV_V2_MODE_CFG		= 0xf000,
-	MV_V2_MODE_CFG_M_UNIT_PWRUP = BIT(13) | BIT(12),
+	MV_V2_MODE_CFG_M_UNIT_PWRUP = BIT(12),
 	MV_V2_PORT_CTRL		= 0xf001,
 	MV_V2_PORT_CTRL_SWRST	= BIT(15),
 	MV_V2_PORT_CTRL_PWRDOWN = BIT(11),
@@ -122,9 +122,12 @@ enum {
 	MV_V2_TEMP_UNKNOWN	= 0x9600, /* unknown function */
 };
 
-static struct ptp_clock_info marvell_ptp_clock_info = {
+static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
+			     struct ptp_system_timestamp *sts);
+
+static struct ptp_clock_info mv3310_ptp_clock_info = {
 	.owner = THIS_MODULE,
-	.name = "mv-10g-phy-phc",
+	.name = "mv10g-phy-phc",
 	.max_adj = 0,
 	.n_alarm = 0,
 	.n_ext_ts = 0,
@@ -135,7 +138,7 @@ static struct ptp_clock_info marvell_ptp_clock_info = {
 	.adjfine = NULL,
 	.adjphase = NULL,
 	.adjtime = NULL,
-	.gettimex64 = NULL,
+	.gettimex64 = mv3310_gettimex64,
 	.getcrosststamp = NULL,
 	.settime64 = NULL,
 	.enable = NULL,
@@ -153,8 +156,7 @@ struct mv3310_priv {
 
 	struct phy_device *phydev;
 	struct ptp_clock *ptp_clock;
-	struct ptp_clock_info *ptp_clock_info;
-
+	struct ptp_clock_info ptp_clock_info;
 };
 
 #ifdef CONFIG_HWMON
@@ -307,8 +309,107 @@ static int mv3310_hwmon_probe(struct phy_device *phydev)
 }
 #endif
 
+static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum, u32 *regval)
+{
+	int ret;
+
+	/* Read register address */
+	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, regnum);
+	if (ret < 0)
+		return ret;
+
+	/* Read that Indirect_read_address gives requested address */
+	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, MV_V2_INDIRECT_READ_ADDR);
+	if (ret < 0)
+		return ret;
+	if (ret != regnum) {
+		pr_err("Indirect read address mismatch: %04x != %04x\n", ret,
+		       regnum);
+		return -EINVAL;
+	}
+
+	/* Read Indirect_read_data_low provides lower 16-bits (15:0) of data */
+	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2,
+			   MV_V2_INDIRECT_READ_DATA_LOW);
+	if (ret < 0)
+		return ret;
+	*regval = ret & 0xffff;
+
+	/* Read Indirect_read_data_high provides upper 16-bits (31:16) of data */
+	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2,
+			   MV_V2_INDIRECT_READ_DATA_HIGH);
+	if (ret < 0)
+		return ret;
+	*regval += ((ret & 0xffff) << 16);
+
+	return 0;
+}
+
+static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum, u32 regval)
+{
+	int ret;
+
+	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, regnum, regval);
+	if (ret < 0)
+		return ret;
+
+	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, regnum + 1, regval >> 16U);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
+static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
+			     struct ptp_system_timestamp *sts)
+{
+	int ret;
+	u32 nsec_frac = 0, nsec = 0, sec_low = 0, sec_high = 0;
+
+	struct mv3310_priv *priv =
+		container_of(ptp, struct mv3310_priv, ptp_clock_info);
+	struct phy_device *phydev = priv->phydev;
+
+	pr_info("Getting time from PHY...\n");
+
+	/* Trigger capture */
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_FUNC_CFG,
+				   MV_V2_PTP_TOD_FUNC_CFG_TRIG |
+					   MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
+	if (ret < 0) {
+		pr_err("Failed to trigger capture: %d\n", ret);
+		return ret;
+	}
+
+	/* Read capture */
+	ret = 0;
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
+				   &nsec_frac);
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC, &nsec);
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_LOW,
+				   &sec_low);
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
+				   &sec_high);
+
+	if (ret < 0) {
+		pr_err("Failed to read TOD capture: nsec_frac=%d, nsec=%d, sec_low=%d, sec_high=%d\n",
+		       nsec_frac, nsec, sec_low, sec_high);
+		return -EIO;
+	}
+
+	if (nsec_frac >= 0x80000000)
+		nsec++;
+
+	ts->tv_sec = ((u64)sec_high << 32U) | sec_low;
+	ts->tv_nsec = nsec;
+
+	return 0;
+}
+
 static int mv3310_power_down(struct phy_device *phydev)
 {
+	phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
+			   MV_V2_MODE_CFG_M_UNIT_PWRUP);
 	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_PORT_CTRL_PWRDOWN);
 }
@@ -321,6 +422,12 @@ static int mv3310_power_up(struct phy_device *phydev)
 	int ret;
 
 	ret = mv3310_check_firmware(phydev);
+	if (ret < 0)
+		return ret;
+
+	/* Enable M unit used for PTP */
+	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
+			 MV_V2_MODE_CFG_M_UNIT_PWRUP);
 	if (ret < 0)
 		return ret;
 
@@ -565,8 +672,8 @@ static int mv3310_probe(struct phy_device *phydev)
 		return -ENOMEM;
 
 	priv->phydev = phydev;
-	priv->ptp_clock_info = &marvell_ptp_clock_info;
-	priv->ptp_clock = ptp_clock_register(priv->ptp_clock_info, &phydev->mdio.dev);
+	priv->ptp_clock_info = mv3310_ptp_clock_info;
+	priv->ptp_clock = ptp_clock_register(&priv->ptp_clock_info, &phydev->mdio.dev);
 	if (IS_ERR(priv->ptp_clock)) {
 		dev_err(&phydev->mdio.dev, "failed to register PTP clock\n");
 		return PTR_ERR(priv->ptp_clock);
@@ -596,11 +703,34 @@ static int mv3310_suspend(struct phy_device *phydev)
 	return mv3310_power_down(phydev);
 }
 
+static int mv3310_ptp_config(struct phy_device *phydev)
+{
+	int ret;
+
+	/* Overwrite TOD Capture register when a capture trigger arrives */
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG,
+				   MV_V2_PTP_TOD_CAP_CFG_OVWR);
+	if (ret < 0)
+		return ret;
+
+	/* Enable capture mode */
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_FUNC_CFG,
+				   MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
+	if (ret < 0)
+		return ret;
+
+	return 0;
+}
+
 static int mv3310_resume(struct phy_device *phydev)
 {
 	int ret;
 
 	ret = mv3310_power_up(phydev);
+	if (ret)
+		return ret;
+
+	ret = mv3310_ptp_config(phydev);
 	if (ret)
 		return ret;
 

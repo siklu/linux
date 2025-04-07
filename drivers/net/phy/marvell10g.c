@@ -29,6 +29,7 @@
 #include <linux/phy.h>
 #include <linux/sfp.h>
 #include <linux/firmware.h>
+#include <linux/ptp_clock_kernel.h>
 
 #define MV_PHY_ALASKA_NBT_QUIRK_MASK	0xfffffffe
 #define MV_PHY_ALASKA_NBT_QUIRK_REV	(MARVELL_PHY_ID_88X3310 | 0xa)
@@ -88,12 +89,30 @@ enum {
 	MV_AN_STAT1000		= 0x8001, /* 1000base-T status register */
 
 	/* Vendor2 MMD registers */
+	MV_V2_MODE_CFG		= 0xf000,
+	MV_V2_MODE_CFG_M_UNIT_PWRUP = BIT(13) | BIT(12),
 	MV_V2_PORT_CTRL		= 0xf001,
 	MV_V2_PORT_CTRL_SWRST	= BIT(15),
 	MV_V2_PORT_CTRL_PWRDOWN = BIT(11),
 	MV_V2_PORT_MAC_TYPE_MASK = 0x7,
 	MV_V2_PORT_MAC_TYPE_XFI_SGMII_AUTONEG = 0x4,
 	MV_V2_PORT_MAC_TYPE_RATE_MATCH = 0x6,
+
+	/* Vendor2 MMD PTP registers */
+	MV_V2_INDIRECT_READ_ADDR	= 0x97fd,
+	MV_V2_INDIRECT_READ_DATA_LOW	= 0x97fe,
+	MV_V2_INDIRECT_READ_DATA_HIGH	= 0x97ff,
+
+	MV_V2_PTP_TOD_CAP0_NSEC_FRAC	= 0xbc32,
+	MV_V2_PTP_TOD_CAP0_NSEC		= 0xbc34,
+	MV_V2_PTP_TOD_CAP0_SEC_LOW	= 0xbc36,
+	MV_V2_PTP_TOD_CAP0_SEC_HIGH	= 0xbc38,
+	MV_V2_PTP_TOD_CAP_CFG		= 0xbc42,
+	MV_V2_PTP_TOD_CAP_CFG_OVWR	= BIT(3),
+	MV_V2_PTP_TOD_FUNC_CFG		= 0xbc46,
+	MV_V2_PTP_TOD_FUNC_CFG_TRIG	= BIT(28),
+	MV_V2_PTP_TOD_FUNC_CFG_CAPTURE	= BIT(31) | BIT(30),
+
 	/* Temperature control/read registers (88X3310 only) */
 	MV_V2_TEMP_CTRL		= 0xf08a,
 	MV_V2_TEMP_CTRL_MASK	= 0xc000,
@@ -103,6 +122,27 @@ enum {
 	MV_V2_TEMP_UNKNOWN	= 0x9600, /* unknown function */
 };
 
+static struct ptp_clock_info marvell_ptp_clock_info = {
+	.owner = THIS_MODULE,
+	.name = "mv-10g-phy-phc",
+	.max_adj = 0,
+	.n_alarm = 0,
+	.n_ext_ts = 0,
+	.n_per_out = 0,
+	.n_pins = 0,
+	.pps = 0,
+	.pin_config = NULL,
+	.adjfine = NULL,
+	.adjphase = NULL,
+	.adjtime = NULL,
+	.gettimex64 = NULL,
+	.getcrosststamp = NULL,
+	.settime64 = NULL,
+	.enable = NULL,
+	.verify = NULL,
+	.do_aux_work = NULL,
+};
+
 struct mv3310_priv {
 	u32 firmware_ver;
 	bool firmware_failed;
@@ -110,6 +150,11 @@ struct mv3310_priv {
 
 	struct device *hwmon_dev;
 	char *hwmon_name;
+
+	struct phy_device *phydev;
+	struct ptp_clock *ptp_clock;
+	struct ptp_clock_info *ptp_clock_info;
+
 };
 
 #ifdef CONFIG_HWMON
@@ -518,6 +563,14 @@ static int mv3310_probe(struct phy_device *phydev)
 	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
+
+	priv->phydev = phydev;
+	priv->ptp_clock_info = &marvell_ptp_clock_info;
+	priv->ptp_clock = ptp_clock_register(priv->ptp_clock_info, &phydev->mdio.dev);
+	if (IS_ERR(priv->ptp_clock)) {
+		dev_err(&phydev->mdio.dev, "failed to register PTP clock\n");
+		return PTR_ERR(priv->ptp_clock);
+	}
 
 	dev_set_drvdata(&phydev->mdio.dev, priv);
 

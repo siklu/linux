@@ -37,6 +37,8 @@
 
 #define MV_FIRMWARE_HEADER_SIZE		32
 
+#define MV_EXTTS_PERIOD_MS		95
+
 enum {
 	MV_PMA_FW_VER0		= 0xc011,
 	MV_PMA_FW_VER1		= 0xc012,
@@ -147,13 +149,14 @@ static int mv3310_settime64(struct ptp_clock_info *p,
 			    const struct timespec64 *ts);
 static int mv3310_enable(struct ptp_clock_info *ptp,
 			 struct ptp_clock_request *request, int on);
+static long mv3310_do_aux_work(struct ptp_clock_info *ptp);
 
 static struct ptp_clock_info mv3310_ptp_clock_info = {
 	.owner = THIS_MODULE,
 	.name = "mv10g-phy-phc",
 	.max_adj = 0,
 	.n_alarm = 0,
-	.n_ext_ts = 0,
+	.n_ext_ts = 1,
 	.n_per_out = 0,
 	.n_pins = 0,
 	.pps = 0,
@@ -166,7 +169,7 @@ static struct ptp_clock_info mv3310_ptp_clock_info = {
 	.settime64 = mv3310_settime64,
 	.enable = mv3310_enable,
 	.verify = NULL,
-	.do_aux_work = NULL,
+	.do_aux_work = mv3310_do_aux_work,
 };
 
 struct mv3310_priv {
@@ -181,6 +184,7 @@ struct mv3310_priv {
 	struct ptp_clock *ptp_clock;
 	struct ptp_clock_info ptp_clock_info;
 	spinlock_t ptp_lock;
+	bool extts_enabled;
 };
 
 #ifdef CONFIG_HWMON
@@ -522,7 +526,52 @@ static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 static int mv3310_enable(struct ptp_clock_info *ptp,
 			 struct ptp_clock_request *request, int on)
 {
-	return -EOPNOTSUPP;
+	int ret = 0;
+	unsigned long flags;
+	struct mv3310_priv *priv =
+		container_of(ptp, struct mv3310_priv, ptp_clock_info);
+
+	spin_lock_irqsave(&priv->ptp_lock, flags);
+
+	switch (request->type) {
+	case PTP_CLK_REQ_EXTTS:
+		priv->extts_enabled = on != 0;
+
+		if (priv->extts_enabled)
+			ptp_schedule_worker(priv->ptp_clock, 0);
+		else
+			ptp_cancel_worker_sync(priv->ptp_clock);
+		break;
+
+	default:
+		ret = -EOPNOTSUPP;
+		break;
+	}
+
+	spin_unlock_irqrestore(&priv->ptp_lock, flags);
+	return ret;
+}
+
+static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
+{
+	struct mv3310_priv *priv =
+		container_of(ptp, struct mv3310_priv, ptp_clock_info);
+
+	if (priv->extts_enabled) {
+		struct ptp_clock_event event;
+		struct timespec64 ts;
+
+		if (mv3310_gettimex64(ptp, &ts, NULL) == 0) {
+			event.type = PTP_CLOCK_EXTTS;
+			event.index = 0; /* We only have one channel */
+			event.timestamp = timespec64_to_ns(&ts);
+			ptp_clock_event(priv->ptp_clock, &event);
+		}
+
+		return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
+	}
+
+	return msecs_to_jiffies(2000);
 }
 
 static int mv3310_power_down(struct phy_device *phydev)

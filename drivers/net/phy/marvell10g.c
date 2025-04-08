@@ -103,6 +103,10 @@ enum {
 	MV_V2_INDIRECT_READ_DATA_LOW	= 0x97fe,
 	MV_V2_INDIRECT_READ_DATA_HIGH	= 0x97ff,
 
+	MV_V2_PTP_TOD_LOAD_NSEC_FRAC	= 0xbc2a,
+	MV_V2_PTP_TOD_LOAD_NSEC		= 0xbc2c,
+	MV_V2_PTP_TOD_LOAD_SEC_LOW	= 0xbc2e,
+	MV_V2_PTP_TOD_LOAD_SEC_HIGH	= 0xbc30,
 	MV_V2_PTP_TOD_CAP0_NSEC_FRAC	= 0xbc32,
 	MV_V2_PTP_TOD_CAP0_NSEC		= 0xbc34,
 	MV_V2_PTP_TOD_CAP0_SEC_LOW	= 0xbc36,
@@ -111,6 +115,9 @@ enum {
 	MV_V2_PTP_TOD_CAP_CFG_OVWR	= BIT(3),
 	MV_V2_PTP_TOD_FUNC_CFG		= 0xbc46,
 	MV_V2_PTP_TOD_FUNC_CFG_TRIG	= BIT(28),
+	MV_V2_PTP_TOD_FUNC_CFG_UPDATE	= 0,
+	MV_V2_PTP_TOD_FUNC_CFG_INCR	= BIT(30),
+	MV_V2_PTP_TOD_FUNC_CFG_DECR	= BIT(31),
 	MV_V2_PTP_TOD_FUNC_CFG_CAPTURE	= BIT(31) | BIT(30),
 
 	/* Temperature control/read registers (88X3310 only) */
@@ -124,6 +131,9 @@ enum {
 
 static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 			     struct ptp_system_timestamp *sts);
+static int mv3310_settime64(struct ptp_clock_info *p,
+			    const struct timespec64 *ts);
+static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta);
 
 static struct ptp_clock_info mv3310_ptp_clock_info = {
 	.owner = THIS_MODULE,
@@ -137,10 +147,10 @@ static struct ptp_clock_info mv3310_ptp_clock_info = {
 	.pin_config = NULL,
 	.adjfine = NULL,
 	.adjphase = NULL,
-	.adjtime = NULL,
+	.adjtime = mv3310_adjtime,
 	.gettimex64 = mv3310_gettimex64,
 	.getcrosststamp = NULL,
-	.settime64 = NULL,
+	.settime64 = mv3310_settime64,
 	.enable = NULL,
 	.verify = NULL,
 	.do_aux_work = NULL,
@@ -360,6 +370,24 @@ static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum, u32 regva
 	return 0;
 }
 
+static int mv3310_trigger_ptp_op(struct phy_device *phydev, int op)
+{
+	int ret;
+
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_FUNC_CFG,
+				   MV_V2_PTP_TOD_FUNC_CFG_TRIG | op);
+	if (ret < 0)
+		return ret;
+
+	if (op != MV_V2_PTP_TOD_FUNC_CFG_CAPTURE) {
+		/* Restore capture mode */
+		return mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_FUNC_CFG,
+					    MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
+	}
+
+	return 0;
+}
+
 static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 			     struct ptp_system_timestamp *sts)
 {
@@ -373,26 +401,25 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 	pr_info("Getting time from PHY...\n");
 
 	/* Trigger capture */
-	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_FUNC_CFG,
-				   MV_V2_PTP_TOD_FUNC_CFG_TRIG |
-					   MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
-	if (ret < 0) {
+	ret = mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
+	if (ret != 0) {
 		pr_err("Failed to trigger capture: %d\n", ret);
 		return ret;
 	}
 
 	/* Read capture */
-	ret = 0;
-	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
-				   &nsec_frac);
+	ptp_read_system_prets(sts);
+	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
+				  &nsec_frac);
+	ptp_read_system_postts(sts);
 	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC, &nsec);
 	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_LOW,
 				   &sec_low);
 	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
 				   &sec_high);
 
-	if (ret < 0) {
-		pr_err("Failed to read TOD capture: nsec_frac=%d, nsec=%d, sec_low=%d, sec_high=%d\n",
+	if (ret != 0) {
+		pr_err("Failed to read TOD capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
 		       nsec_frac, nsec, sec_low, sec_high);
 		return -EIO;
 	}
@@ -404,6 +431,68 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 	ts->tv_nsec = nsec;
 
 	return 0;
+}
+
+static int mv3310_settime64(struct ptp_clock_info *p,
+			    const struct timespec64 *ts)
+{
+	int ret;
+	u32 sec_low = lower_32_bits(ts->tv_sec);
+	u32 sec_high = upper_32_bits(ts->tv_sec) & 0xffff;
+	u32 nsec = lower_32_bits(ts->tv_nsec);
+
+	struct mv3310_priv *priv =
+		container_of(p, struct mv3310_priv, ptp_clock_info);
+	struct phy_device *phydev = priv->phydev;
+
+	/* Load the new timestamp */
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC_FRAC, 0);
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC, nsec);
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_LOW,
+				    sec_low);
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_HIGH,
+				    sec_high);
+	if (ret != 0) {
+		pr_err("Failed to load TOD: %d\n", ret);
+		return ret;
+	}
+
+	/* Trigger update */
+	return mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_UPDATE);
+}
+
+static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
+{
+	int ret;
+	u64 total_nsec = abs(delta);
+	u64 sec = total_nsec / NSEC_PER_SEC;
+	u32 nsec = total_nsec % NSEC_PER_SEC;
+	u32 sec_low = lower_32_bits(sec);
+	u32 sec_high = upper_32_bits(sec) & 0xffff;
+
+	struct mv3310_priv *priv =
+		container_of(ptp, struct mv3310_priv, ptp_clock_info);
+	struct phy_device *phydev = priv->phydev;
+
+	if (delta == 0)
+		return 0;
+
+	/* Load the new timestamp */
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC_FRAC, 0);
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC, nsec);
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_LOW,
+				    sec_low);
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_HIGH,
+				    sec_high);
+	if (ret < 0) {
+		pr_err("Failed to load TOD: %d\n", ret);
+		return ret;
+	}
+
+	/* Trigger update */
+	return mv3310_trigger_ptp_op(phydev,
+				     delta < 0 ? MV_V2_PTP_TOD_FUNC_CFG_DECR :
+						 MV_V2_PTP_TOD_FUNC_CFG_INCR);
 }
 
 static int mv3310_power_down(struct phy_device *phydev)

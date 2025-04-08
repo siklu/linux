@@ -30,6 +30,7 @@
 #include <linux/sfp.h>
 #include <linux/firmware.h>
 #include <linux/ptp_clock_kernel.h>
+#include <linux/spinlock.h>
 
 #define MV_PHY_ALASKA_NBT_QUIRK_MASK	0xfffffffe
 #define MV_PHY_ALASKA_NBT_QUIRK_REV	(MARVELL_PHY_ID_88X3310 | 0xa)
@@ -129,11 +130,23 @@ enum {
 	MV_V2_TEMP_UNKNOWN	= 0x9600, /* unknown function */
 };
 
+static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
+{
+	return -EOPNOTSUPP;
+}
+
+static int mv3310_adjphase(struct ptp_clock_info *ptp, s32 phase)
+{
+	return -EOPNOTSUPP;
+}
+
+static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta);
 static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 			     struct ptp_system_timestamp *sts);
 static int mv3310_settime64(struct ptp_clock_info *p,
 			    const struct timespec64 *ts);
-static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta);
+static int mv3310_enable(struct ptp_clock_info *ptp,
+			 struct ptp_clock_request *request, int on);
 
 static struct ptp_clock_info mv3310_ptp_clock_info = {
 	.owner = THIS_MODULE,
@@ -145,13 +158,13 @@ static struct ptp_clock_info mv3310_ptp_clock_info = {
 	.n_pins = 0,
 	.pps = 0,
 	.pin_config = NULL,
-	.adjfine = NULL,
-	.adjphase = NULL,
+	.adjfine = mv3310_adjfine,
+	.adjphase = mv3310_adjphase,
 	.adjtime = mv3310_adjtime,
 	.gettimex64 = mv3310_gettimex64,
 	.getcrosststamp = NULL,
 	.settime64 = mv3310_settime64,
-	.enable = NULL,
+	.enable = mv3310_enable,
 	.verify = NULL,
 	.do_aux_work = NULL,
 };
@@ -167,6 +180,7 @@ struct mv3310_priv {
 	struct phy_device *phydev;
 	struct ptp_clock *ptp_clock;
 	struct ptp_clock_info ptp_clock_info;
+	spinlock_t ptp_lock;
 };
 
 #ifdef CONFIG_HWMON
@@ -392,6 +406,7 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 			     struct ptp_system_timestamp *sts)
 {
 	int ret;
+	unsigned long flags;
 	u32 nsec_frac = 0, nsec = 0, sec_low = 0, sec_high = 0;
 
 	struct mv3310_priv *priv =
@@ -400,10 +415,12 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 
 	pr_info("Getting time from PHY...\n");
 
+	spin_lock_irqsave(&priv->ptp_lock, flags);
 	/* Trigger capture */
 	ret = mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
 	if (ret != 0) {
 		pr_err("Failed to trigger capture: %d\n", ret);
+		spin_unlock_irqrestore(&priv->ptp_lock, flags);
 		return ret;
 	}
 
@@ -417,6 +434,7 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 				   &sec_low);
 	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
 				   &sec_high);
+	spin_unlock_irqrestore(&priv->ptp_lock, flags);
 
 	if (ret != 0) {
 		pr_err("Failed to read TOD capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
@@ -437,6 +455,7 @@ static int mv3310_settime64(struct ptp_clock_info *p,
 			    const struct timespec64 *ts)
 {
 	int ret;
+	unsigned long flags;
 	u32 sec_low = lower_32_bits(ts->tv_sec);
 	u32 sec_high = upper_32_bits(ts->tv_sec) & 0xffff;
 	u32 nsec = lower_32_bits(ts->tv_nsec);
@@ -446,6 +465,7 @@ static int mv3310_settime64(struct ptp_clock_info *p,
 	struct phy_device *phydev = priv->phydev;
 
 	/* Load the new timestamp */
+	spin_lock_irqsave(&priv->ptp_lock, flags);
 	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC_FRAC, 0);
 	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC, nsec);
 	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_LOW,
@@ -454,21 +474,21 @@ static int mv3310_settime64(struct ptp_clock_info *p,
 				    sec_high);
 	if (ret != 0) {
 		pr_err("Failed to load TOD: %d\n", ret);
+		spin_unlock_irqrestore(&priv->ptp_lock, flags);
 		return ret;
 	}
 
 	/* Trigger update */
-	return mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_UPDATE);
+	ret = mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_UPDATE);
+	spin_unlock_irqrestore(&priv->ptp_lock, flags);
+	return ret;
 }
 
 static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
 	int ret;
-	u64 total_nsec = abs(delta);
-	u64 sec = total_nsec / NSEC_PER_SEC;
-	u32 nsec = total_nsec % NSEC_PER_SEC;
-	u32 sec_low = lower_32_bits(sec);
-	u32 sec_high = upper_32_bits(sec) & 0xffff;
+	unsigned long flags;
+	struct timespec64 ts = ns_to_timespec64(abs(delta));
 
 	struct mv3310_priv *priv =
 		container_of(ptp, struct mv3310_priv, ptp_clock_info);
@@ -478,21 +498,31 @@ static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 		return 0;
 
 	/* Load the new timestamp */
+	spin_lock_irqsave(&priv->ptp_lock, flags);
 	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC_FRAC, 0);
-	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC, nsec);
+	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC, ts.tv_nsec);
 	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_LOW,
-				    sec_low);
+				    lower_32_bits(ts.tv_sec));
 	ret += mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_HIGH,
-				    sec_high);
+				    upper_32_bits(ts.tv_sec) & 0xffff);
 	if (ret < 0) {
 		pr_err("Failed to load TOD: %d\n", ret);
+		spin_unlock_irqrestore(&priv->ptp_lock, flags);
 		return ret;
 	}
 
 	/* Trigger update */
-	return mv3310_trigger_ptp_op(phydev,
-				     delta < 0 ? MV_V2_PTP_TOD_FUNC_CFG_DECR :
-						 MV_V2_PTP_TOD_FUNC_CFG_INCR);
+	ret = mv3310_trigger_ptp_op(phydev,
+				    delta < 0 ? MV_V2_PTP_TOD_FUNC_CFG_DECR :
+						MV_V2_PTP_TOD_FUNC_CFG_INCR);
+	spin_unlock_irqrestore(&priv->ptp_lock, flags);
+	return ret;
+}
+
+static int mv3310_enable(struct ptp_clock_info *ptp,
+			 struct ptp_clock_request *request, int on)
+{
+	return -EOPNOTSUPP;
 }
 
 static int mv3310_power_down(struct phy_device *phydev)

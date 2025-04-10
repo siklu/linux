@@ -110,11 +110,20 @@ enum {
 	MV_V2_PTP_TOD_LOAD_NSEC		= 0xbc2c,
 	MV_V2_PTP_TOD_LOAD_SEC_LOW	= 0xbc2e,
 	MV_V2_PTP_TOD_LOAD_SEC_HIGH	= 0xbc30,
+	/* TOD Capture Value<0> will store the TOD @ pps trigger (overwritten) */
 	MV_V2_PTP_TOD_CAP0_NSEC_FRAC	= 0xbc32,
 	MV_V2_PTP_TOD_CAP0_NSEC		= 0xbc34,
 	MV_V2_PTP_TOD_CAP0_SEC_LOW	= 0xbc36,
 	MV_V2_PTP_TOD_CAP0_SEC_HIGH	= 0xbc38,
+	/* TOD Capture Value<1> will store the TOD @ cpu trigger (manually cleared) */
+	MV_V2_PTP_TOD_CAP1_NSEC_FRAC	= 0xbc3a,
+	MV_V2_PTP_TOD_CAP1_NSEC		= 0xbc3c,
+	MV_V2_PTP_TOD_CAP1_SEC_LOW	= 0xbc3e,
+	MV_V2_PTP_TOD_CAP1_SEC_HIGH	= 0xbc40,
+
 	MV_V2_PTP_TOD_CAP_CFG		= 0xbc42,
+	MV_V2_PTP_TOD_CAP_CFG_VAL0	= BIT(0),
+	MV_V2_PTP_TOD_CAP_CFG_VAL1	= BIT(1),
 	MV_V2_PTP_TOD_CAP_CFG_OVWR	= BIT(3),
 	MV_V2_PTP_TOD_FUNC_CFG		= 0xbc46,
 	MV_V2_PTP_TOD_FUNC_CFG_TRIG	= BIT(28),
@@ -406,6 +415,58 @@ static int mv3310_trigger_ptp_op(struct phy_device *phydev, int op)
 	return 0;
 }
 
+static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
+{
+	int ret;
+	unsigned long flags;
+	u32 nsec_frac = 0, nsec = 0, sec_low = 0, sec_high = 0, cap_cfg = 0;
+
+	struct mv3310_priv *priv =
+		container_of(ptp, struct mv3310_priv, ptp_clock_info);
+	struct phy_device *phydev = priv->phydev;
+
+	spin_lock_irqsave(&priv->ptp_lock, flags);
+
+	/* Check if TOD@pps is available */
+	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, &cap_cfg);
+	if (ret != 0) {
+		spin_unlock_irqrestore(&priv->ptp_lock, flags);
+		return ret;
+	}
+	if (!(cap_cfg & MV_V2_PTP_TOD_CAP_CFG_VAL0)) {
+		spin_unlock_irqrestore(&priv->ptp_lock, flags);
+		return -EAGAIN;
+	}
+
+	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
+				  &nsec_frac);
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC, &nsec);
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_LOW,
+				   &sec_low);
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
+				   &sec_high);
+
+	/* Clear both TOD captures, safe because TOD@cpu was already consumed */
+	mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG,
+			     MV_V2_PTP_TOD_CAP_CFG_OVWR);
+
+	spin_unlock_irqrestore(&priv->ptp_lock, flags);
+
+	if (ret != 0) {
+		pr_err("Failed to read TOD<0> capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
+		       nsec_frac, nsec, sec_low, sec_high);
+		return -EIO;
+	}
+
+	if (nsec_frac >= 0x80000000)
+		nsec++;
+
+	ts->tv_sec = ((u64)sec_high << 32U) | sec_low;
+	ts->tv_nsec = nsec;
+
+	return 0;
+}
+
 static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 			     struct ptp_system_timestamp *sts)
 {
@@ -417,9 +478,12 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 		container_of(ptp, struct mv3310_priv, ptp_clock_info);
 	struct phy_device *phydev = priv->phydev;
 
-	pr_info("Getting time from PHY...\n");
-
 	spin_lock_irqsave(&priv->ptp_lock, flags);
+	/* Clear TOD Capture Value<1> (leave only TOD Capture Value<0> set)*/
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG,
+				   MV_V2_PTP_TOD_CAP_CFG_VAL0 |
+					   MV_V2_PTP_TOD_CAP_CFG_OVWR);
+
 	/* Trigger capture */
 	ret = mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
 	if (ret != 0) {
@@ -430,18 +494,18 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 
 	/* Read capture */
 	ptp_read_system_prets(sts);
-	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
+	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP1_NSEC_FRAC,
 				  &nsec_frac);
 	ptp_read_system_postts(sts);
-	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC, &nsec);
-	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_LOW,
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP1_NSEC, &nsec);
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP1_SEC_LOW,
 				   &sec_low);
-	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
+	ret += mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP1_SEC_HIGH,
 				   &sec_high);
 	spin_unlock_irqrestore(&priv->ptp_lock, flags);
 
 	if (ret != 0) {
-		pr_err("Failed to read TOD capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
+		pr_err("Failed to read TOD<1> capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
 		       nsec_frac, nsec, sec_low, sec_high);
 		return -EIO;
 	}
@@ -561,7 +625,7 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 		struct ptp_clock_event event;
 		struct timespec64 ts;
 
-		if (mv3310_gettimex64(ptp, &ts, NULL) == 0) {
+		if (mv3310_getppstime(ptp, &ts) == 0) {
 			event.type = PTP_CLOCK_EXTTS;
 			event.index = 0; /* We only have one channel */
 			event.timestamp = timespec64_to_ns(&ts);

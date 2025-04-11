@@ -94,7 +94,6 @@ enum {
 	MV_V2_PORT_MAC_TYPE_MASK = 0x7,
 	MV_V2_PORT_MAC_TYPE_XFI_SGMII_AUTONEG = 0x4,
 	MV_V2_PORT_MAC_TYPE_RATE_MATCH = 0x6,
-
 	/* Temperature control/read registers (88X3310 only) */
 	MV_V2_TEMP_CTRL		= 0xf08a,
 	MV_V2_TEMP_CTRL_MASK	= 0xc000,

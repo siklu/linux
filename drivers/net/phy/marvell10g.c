@@ -116,10 +116,25 @@ struct mv3310_priv {
 	struct mv3310_ptp_priv *ptp_priv;
 };
 
+#ifdef CONFIG_MARVELL_10G_PHY_PTP
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct phy_device *phydev);
 int mv3310_ptp_power_down(struct phy_device *phydev);
-int mv3310_ptp_resume(struct phy_device *phydev);
+#else
+static inline struct mv3310_ptp_priv *
+mv3310_ptp_probe(struct phy_device *phydev)
+{
+	return NULL;
+}
+static inline int mv3310_ptp_power_up(struct phy_device *phydev)
+{
+	return 0;
+}
+static inline int mv3310_ptp_power_down(struct phy_device *phydev)
+{
+	return 0;
+}
+#endif
 
 #ifdef CONFIG_HWMON
 static umode_t mv3310_hwmon_is_visible(const void *data,
@@ -563,10 +578,6 @@ static int mv3310_resume(struct phy_device *phydev)
 	int ret;
 
 	ret = mv3310_power_up(phydev);
-	if (ret)
-		return ret;
-
-	ret = mv3310_ptp_resume(phydev);
 	if (ret)
 		return ret;
 

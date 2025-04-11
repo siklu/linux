@@ -50,7 +50,6 @@ struct mv3310_ptp_priv {
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct phy_device *phydev);
 int mv3310_ptp_power_down(struct phy_device *phydev);
-int mv3310_ptp_resume(struct phy_device *phydev);
 
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
 			       u32 *regval);
@@ -124,19 +123,6 @@ int mv3310_ptp_power_down(struct phy_device *phydev)
 {
 	return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
 				  MV_V2_MODE_CFG_M_UNIT_PWRUP);
-}
-
-int mv3310_ptp_resume(struct phy_device *phydev)
-{
-	int ret;
-
-	/* Enable capture mode */
-	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_FUNC_CFG,
-				   MV_V2_PTP_TOD_FUNC_CFG_CAPTURE);
-	if (ret < 0)
-		return ret;
-
-	return 0;
 }
 
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)

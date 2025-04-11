@@ -423,23 +423,18 @@ static int mv3310_trigger_ptp_op(struct phy_device *phydev, int op)
 static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	int ret;
-	unsigned long flags;
 	u32 nsec_frac = 0, nsec = 0, sec_low = 0, sec_high = 0, cap_cfg = 0;
 
 	struct mv3310_priv *priv =
 		container_of(ptp, struct mv3310_priv, ptp_clock_info);
 	struct phy_device *phydev = priv->phydev;
 
-	spin_lock_irqsave(&priv->ptp_lock, flags);
-
 	/* Check if TOD@pps is available */
 	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, &cap_cfg);
 	if (ret < 0)
-		goto unlock_out;
-	if (!(cap_cfg & MV_V2_PTP_TOD_CAP_CFG_VAL0)) {
-		ret = -EAGAIN;
-		goto unlock_out;
-	}
+		return ret;
+	if (!(cap_cfg & MV_V2_PTP_TOD_CAP_CFG_VAL0))
+		return -EAGAIN;
 
 	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
 				   &nsec_frac);
@@ -452,13 +447,11 @@ static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 	if (ret < 0) {
 		pr_err("Failed to read TOD<0> capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
 		       nsec_frac, nsec, sec_low, sec_high);
-		ret = -EIO;
-		goto unlock_out;
+		return -EIO;
 	}
 
 	/* Finished reading capture, reset */
 	mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
-	spin_unlock_irqrestore(&priv->ptp_lock, flags);
 
 	if (nsec_frac >= 0x80000000)
 		nsec++;
@@ -466,10 +459,6 @@ static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 	ts->tv_nsec = nsec;
 
 	return 0;
-
-unlock_out:
-	spin_unlock_irqrestore(&priv->ptp_lock, flags);
-	return ret;
 }
 
 static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
@@ -627,6 +616,7 @@ static int mv3310_enable(struct ptp_clock_info *ptp,
 
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 {
+	unsigned long flags;
 	struct mv3310_priv *priv =
 		container_of(ptp, struct mv3310_priv, ptp_clock_info);
 
@@ -634,12 +624,14 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 		struct ptp_clock_event event;
 		struct timespec64 ts;
 
+		spin_lock_irqsave(&priv->ptp_lock, flags);
 		if (mv3310_getppstime(ptp, &ts) == 0) {
 			event.type = PTP_CLOCK_EXTTS;
 			event.index = 0; /* We only have one channel */
 			event.timestamp = timespec64_to_ns(&ts);
 			ptp_clock_event(priv->ptp_clock, &event);
 		}
+		spin_unlock_irqrestore(&priv->ptp_lock, flags);
 
 		return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 	}

@@ -61,8 +61,6 @@ static int mv3310_adjphase(struct ptp_clock_info *ptp, s32 phase);
 static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta);
 static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 			     struct ptp_system_timestamp *sts);
-static int mv3310_getcrosststamp(struct ptp_clock_info *ptp,
-				 struct system_device_crosststamp *cts);
 static int mv3310_settime64(struct ptp_clock_info *ptp,
 			    const struct timespec64 *ts);
 static int mv3310_enable(struct ptp_clock_info *ptp,
@@ -96,11 +94,13 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	priv->caps.adjphase = mv3310_adjphase;
 	priv->caps.adjtime = mv3310_adjtime;
 	priv->caps.gettimex64 = mv3310_gettimex64;
-	priv->caps.getcrosststamp = mv3310_getcrosststamp;
 	priv->caps.settime64 = mv3310_settime64;
 	priv->caps.enable = mv3310_enable;
 	priv->caps.verify = mv3310_verify;
 	priv->caps.do_aux_work = mv3310_do_aux_work;
+	/* This is set to NULL instead of EOPNOTSUPP, simply defining it will
+	   present "has cross timestamping support" in capabilities. */
+	priv->caps.getcrosststamp = NULL;
 
 	priv->clock = ptp_clock_register(&priv->caps, &phydev->mdio.dev);
 	if (IS_ERR(priv->clock)) {
@@ -131,12 +131,6 @@ static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)
 }
 
 static int mv3310_adjphase(struct ptp_clock_info *ptp, s32 phase)
-{
-	return -EOPNOTSUPP;
-}
-
-static int mv3310_getcrosststamp(struct ptp_clock_info *ptp,
-				 struct system_device_crosststamp *cts)
 {
 	return -EOPNOTSUPP;
 }

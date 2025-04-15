@@ -10,6 +10,10 @@
 #define MV_EXTTS_PERIOD_MS 95
 
 enum {
+	/* PMA/PMD MMD Registers */
+	MV_PMA_XG_EXT_STATUS		= 0xc001,
+	MV_PMA_XG_EXT_STATUS_PTP_UNSUPP = BIT(12),
+
 	/* Vendor2 MMD registers */
 	MV_V2_MODE_CFG 			= 0xf000,
 	MV_V2_MODE_CFG_M_UNIT_PWRUP 	= BIT(12),
@@ -69,9 +73,25 @@ static int mv3310_verify(struct ptp_clock_info *ptp, unsigned int pin,
 			 enum ptp_pin_function func, unsigned int chan);
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp);
 
+static bool mv3310_is_ptp_supported(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = phy_read_mmd(phydev, MDIO_MMD_PMAPMD, MV_PMA_XG_EXT_STATUS);
+	if (ret < 0)
+		return false;
+
+	return !(ret & MV_PMA_XG_EXT_STATUS_PTP_UNSUPP);
+}
+
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 {
 	struct mv3310_ptp_priv *priv;
+
+	if (!mv3310_is_ptp_supported(phydev)) {
+		dev_info(&phydev->mdio.dev, "PTP is not present in this device\n");
+		return NULL;
+	}
 
 	priv = devm_kzalloc(&phydev->mdio.dev, sizeof(*priv), GFP_KERNEL);
 	if (!priv)
@@ -114,6 +134,9 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 
 int mv3310_ptp_power_up(struct phy_device *phydev)
 {
+	if (!mv3310_is_ptp_supported(phydev))
+		return 0;
+
 	/* Enable M unit used for PTP */
 	return phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
 				MV_V2_MODE_CFG_M_UNIT_PWRUP);
@@ -121,6 +144,9 @@ int mv3310_ptp_power_up(struct phy_device *phydev)
 
 int mv3310_ptp_power_down(struct phy_device *phydev)
 {
+	if (!mv3310_is_ptp_supported(phydev))
+		return 0;
+
 	return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
 				  MV_V2_MODE_CFG_M_UNIT_PWRUP);
 }
@@ -212,10 +238,58 @@ static int mv3310_trigger_ptp_op(struct phy_device *phydev, int op)
 	return 0;
 }
 
+static int mv3310_read_tod(struct phy_device *phydev, struct timespec64 *ts,
+			   struct ptp_system_timestamp *sts)
+{
+	int ret = 0;
+	u32 nsec_frac = 0, nsec = 0, sec_low = 0, sec_high = 0;
+
+	ptp_read_system_prets(sts);
+	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
+				   &nsec_frac);
+	ptp_read_system_postts(sts);
+	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC, &nsec);
+	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_LOW,
+				   &sec_low);
+	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
+				   &sec_high);
+
+	if (ret < 0)
+		return -EIO;
+
+	if (nsec_frac >= 0x80000000)
+		nsec++;
+	ts->tv_sec = ((u64)sec_high << 32U) | sec_low;
+	ts->tv_nsec = nsec;
+
+	return 0;
+}
+
+static int mv3310_write_tod(struct phy_device *phydev,
+			    const struct timespec64 *ts)
+{
+	int ret = 0;
+	u32 nsec = lower_32_bits(ts->tv_nsec);
+	u32 sec_low = lower_32_bits(ts->tv_sec);
+	u32 sec_high = upper_32_bits(ts->tv_sec) & 0xffff;
+
+	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC_FRAC, 0);
+	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC, nsec);
+	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_LOW,
+				    sec_low);
+	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_HIGH,
+				    sec_high);
+
+	if (ret < 0)
+		return -EIO;
+
+	return 0;
+}
+
 static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	int ret;
-	u32 nsec_frac = 0, nsec = 0, sec_low = 0, sec_high = 0, cap_cfg = 0;
+	u32 cap_cfg = 0;
 
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
@@ -228,28 +302,12 @@ static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 	if (!(cap_cfg & MV_V2_PTP_TOD_CAP_CFG_VAL0))
 		return -EAGAIN;
 
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
-				   &nsec_frac);
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC, &nsec);
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_LOW,
-				   &sec_low);
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
-				   &sec_high);
-
-	if (ret < 0) {
-		pr_err("Failed to read TOD<0> capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
-		       nsec_frac, nsec, sec_low, sec_high);
-		return -EIO;
-	}
+	ret = mv3310_read_tod(phydev, ts, NULL);
+	if (ret < 0)
+		return ret;
 
 	/* Finished reading capture, reset */
 	mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
-
-	if (nsec_frac >= 0x80000000)
-		nsec++;
-	ts->tv_sec = ((u64)sec_high << 32U) | sec_low;
-	ts->tv_nsec = nsec;
-
 	return 0;
 }
 
@@ -258,7 +316,6 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 {
 	int ret;
 	unsigned long flags;
-	u32 nsec_frac = 0, nsec = 0, sec_low = 0, sec_high = 0;
 
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
@@ -278,31 +335,13 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 		goto unlock_out;
 
 	/* Read capture */
-	ptp_read_system_prets(sts);
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC_FRAC,
-				   &nsec_frac);
-	ptp_read_system_postts(sts);
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_NSEC, &nsec);
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_LOW,
-				   &sec_low);
-	ret |= mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP0_SEC_HIGH,
-				   &sec_high);
-
-	if (ret < 0) {
-		pr_err("Failed to read TOD<0> capture: nsec_frac=%u, nsec=%u, sec_low=%u, sec_high=%u\n",
-		       nsec_frac, nsec, sec_low, sec_high);
-		ret = -EIO;
+	ret = mv3310_read_tod(phydev, ts, sts);
+	if (ret < 0)
 		goto unlock_out;
-	}
 
 	/* Finished reading capture, reset */
 	mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
 	spin_unlock_irqrestore(&priv->lock, flags);
-
-	if (nsec_frac >= 0x80000000)
-		nsec++;
-	ts->tv_sec = ((u64)sec_high << 32U) | sec_low;
-	ts->tv_nsec = nsec;
 
 	return 0;
 
@@ -316,9 +355,6 @@ static int mv3310_settime64(struct ptp_clock_info *ptp,
 {
 	int ret = 0;
 	unsigned long flags;
-	u32 sec_low = lower_32_bits(ts->tv_sec);
-	u32 sec_high = upper_32_bits(ts->tv_sec) & 0xffff;
-	u32 nsec = lower_32_bits(ts->tv_nsec);
 
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
@@ -326,16 +362,9 @@ static int mv3310_settime64(struct ptp_clock_info *ptp,
 
 	/* Load the new timestamp */
 	spin_lock_irqsave(&priv->lock, flags);
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC_FRAC, 0);
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC, nsec);
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_LOW,
-				    sec_low);
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_HIGH,
-				    sec_high);
-	if (ret < 0) {
-		ret = -EIO;
+	ret = mv3310_write_tod(phydev, ts);
+	if (ret < 0)
 		goto unlock_out;
-	}
 
 	/* Trigger update */
 	ret = mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_UPDATE);
@@ -349,7 +378,7 @@ static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
 	int ret = 0;
 	unsigned long flags;
-	struct timespec64 ts = ns_to_timespec64(abs(delta));
+	const struct timespec64 ts = ns_to_timespec64(abs(delta));
 
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
@@ -360,17 +389,9 @@ static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 
 	/* Load the new timestamp */
 	spin_lock_irqsave(&priv->lock, flags);
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC_FRAC, 0);
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_NSEC,
-				    ts.tv_nsec);
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_LOW,
-				    lower_32_bits(ts.tv_sec));
-	ret |= mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_LOAD_SEC_HIGH,
-				    upper_32_bits(ts.tv_sec) & 0xffff);
-	if (ret < 0) {
-		ret = -EIO;
+	ret = mv3310_write_tod(phydev, &ts);
+	if (ret < 0)
 		goto unlock_out;
-	}
 
 	/* Trigger update */
 	ret = mv3310_trigger_ptp_op(phydev,

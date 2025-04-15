@@ -2,6 +2,12 @@
 /*
  * Marvell 10G 88x3310 PHY driver PTP support
  *
+ * There are four 32-bit TOD registers (fractional nanoseconds, nanoseconds,
+ * seconds low and seconds high). Each 32-bit register write requires two MDIO
+ * operations and each read requires four MDIO operations. MDIO access is slow,
+ * therefore this implementation protects against concurrent access to the TOD
+ * registers by using spin_trylock_irqsave instead of regular spin_lock_irqsave
+ * to avoid potential RCU stalls when the lock is not available.
  */
 #include <linux/phy.h>
 #include <linux/ptp_clock_kernel.h>
@@ -289,26 +295,35 @@ static int mv3310_write_tod(struct phy_device *phydev,
 static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	int ret;
+	unsigned long flags;
 	u32 cap_cfg = 0;
 
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 	struct phy_device *phydev = priv->phydev;
 
+	if (!spin_trylock_irqsave(&priv->lock, flags))
+		return -EBUSY;
+
 	/* Check if TOD@pps is available */
 	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, &cap_cfg);
 	if (ret < 0)
-		return ret;
-	if (!(cap_cfg & MV_V2_PTP_TOD_CAP_CFG_VAL0))
-		return -EAGAIN;
+		goto unlock_out;
+	if (!(cap_cfg & MV_V2_PTP_TOD_CAP_CFG_VAL0)) {
+		ret = -EAGAIN;
+		goto unlock_out;
+	}
 
 	ret = mv3310_read_tod(phydev, ts, NULL);
 	if (ret < 0)
-		return ret;
+		goto unlock_out;
 
 	/* Finished reading capture, reset */
-	mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
-	return 0;
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
+
+unlock_out:
+	spin_unlock_irqrestore(&priv->lock, flags);
+	return ret;
 }
 
 static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
@@ -321,7 +336,9 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 	struct phy_device *phydev = priv->phydev;
 
-	spin_lock_irqsave(&priv->lock, flags);
+	if (!spin_trylock_irqsave(&priv->lock, flags))
+		return -EBUSY;
+
 	/* Clear existing TOD Capture Values and trigger new capture.
 	   In the unlikely event that a pulse-in trigger will capture the TOD
 	   to TOD_CAP0 and this CPU trigger will capture it to TOD_CAP1, we are
@@ -340,10 +357,7 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 		goto unlock_out;
 
 	/* Finished reading capture, reset */
-	mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
-	spin_unlock_irqrestore(&priv->lock, flags);
-
-	return 0;
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
 
 unlock_out:
 	spin_unlock_irqrestore(&priv->lock, flags);
@@ -361,7 +375,9 @@ static int mv3310_settime64(struct ptp_clock_info *ptp,
 	struct phy_device *phydev = priv->phydev;
 
 	/* Load the new timestamp */
-	spin_lock_irqsave(&priv->lock, flags);
+	if (!spin_trylock_irqsave(&priv->lock, flags))
+		return -EBUSY;
+
 	ret = mv3310_write_tod(phydev, ts);
 	if (ret < 0)
 		goto unlock_out;
@@ -388,7 +404,9 @@ static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 		return 0;
 
 	/* Load the new timestamp */
-	spin_lock_irqsave(&priv->lock, flags);
+	if (!spin_trylock_irqsave(&priv->lock, flags))
+		return -EBUSY;
+
 	ret = mv3310_write_tod(phydev, &ts);
 	if (ret < 0)
 		goto unlock_out;
@@ -429,7 +447,6 @@ static int mv3310_enable(struct ptp_clock_info *ptp,
 
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 {
-	unsigned long flags;
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 
@@ -437,14 +454,12 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 		struct ptp_clock_event event;
 		struct timespec64 ts;
 
-		spin_lock_irqsave(&priv->lock, flags);
 		if (mv3310_getppstime(ptp, &ts) == 0) {
 			event.type = PTP_CLOCK_EXTTS;
 			event.index = 0; /* We only have one channel */
 			event.timestamp = timespec64_to_ns(&ts);
 			ptp_clock_event(priv->clock, &event);
 		}
-		spin_unlock_irqrestore(&priv->lock, flags);
 
 		return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 	}

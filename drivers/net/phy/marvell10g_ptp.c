@@ -6,11 +6,12 @@
  * seconds low and seconds high). Each 32-bit register write requires two MDIO
  * operations and each read requires four MDIO operations. MDIO access is slow,
  * therefore this implementation protects against concurrent access to the TOD
- * registers by using spin_trylock_irqsave instead of regular spin_lock_irqsave
- * to avoid potential RCU stalls when the lock is not available.
+ * registers by using mutex instead of spinlock to avoid potential RCU stalls
+ * when the spinlock would not be available for a long time.
  */
 #include <linux/phy.h>
 #include <linux/ptp_clock_kernel.h>
+#include <linux/mutex.h>
 #include <linux/spinlock.h>
 
 #define MV_EXTTS_PERIOD_MS 95
@@ -53,8 +54,9 @@ struct mv3310_ptp_priv {
 	struct phy_device *phydev;
 	struct ptp_clock_info caps;
 	struct ptp_clock *clock;
-	spinlock_t lock;
-	bool extts_enabled;
+	struct mutex lock; /* Protects against concurrent MDIO register access */
+	u16 extts_reqs; /* Number of external timestamp requests */
+	spinlock_t extts_reqs_lock; /* Protects the extts_reqs variable */
 };
 
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
@@ -104,8 +106,9 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 		return NULL;
 
 	priv->phydev = phydev;
-	priv->extts_enabled = false;
-	spin_lock_init(&priv->lock);
+	mutex_init(&priv->lock);
+	priv->extts_reqs = 0;
+	spin_lock_init(&priv->extts_reqs_lock);
 
 	priv->caps.owner = THIS_MODULE;
 	strscpy(priv->caps.name, "mv10g-phy-phc", sizeof(priv->caps.name));
@@ -263,7 +266,8 @@ static int mv3310_read_tod(struct phy_device *phydev, struct timespec64 *ts,
 	if (ret < 0)
 		return -EIO;
 
-	if (nsec_frac >= 0x80000000)
+	/* check if nsec should be rounded up */
+	if (nsec_frac > (U32_MAX / 2))
 		nsec++;
 	ts->tv_sec = ((u64)sec_high << 32U) | sec_low;
 	ts->tv_nsec = nsec;
@@ -295,16 +299,13 @@ static int mv3310_write_tod(struct phy_device *phydev,
 static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	int ret;
-	unsigned long flags;
 	u32 cap_cfg = 0;
 
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 	struct phy_device *phydev = priv->phydev;
 
-	if (!spin_trylock_irqsave(&priv->lock, flags))
-		return -EBUSY;
-
+	mutex_lock(&priv->lock);
 	/* Check if TOD@pps is available */
 	ret = mv3310_read_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, &cap_cfg);
 	if (ret < 0)
@@ -322,7 +323,7 @@ static int mv3310_getppstime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
 
 unlock_out:
-	spin_unlock_irqrestore(&priv->lock, flags);
+	mutex_unlock(&priv->lock);
 	return ret;
 }
 
@@ -330,15 +331,11 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 			     struct ptp_system_timestamp *sts)
 {
 	int ret;
-	unsigned long flags;
-
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 	struct phy_device *phydev = priv->phydev;
 
-	if (!spin_trylock_irqsave(&priv->lock, flags))
-		return -EBUSY;
-
+	mutex_lock(&priv->lock);
 	/* Clear existing TOD Capture Values and trigger new capture.
 	   In the unlikely event that a pulse-in trigger will capture the TOD
 	   to TOD_CAP0 and this CPU trigger will capture it to TOD_CAP1, we are
@@ -360,24 +357,20 @@ static int mv3310_gettimex64(struct ptp_clock_info *ptp, struct timespec64 *ts,
 	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_TOD_CAP_CFG, 0);
 
 unlock_out:
-	spin_unlock_irqrestore(&priv->lock, flags);
+	mutex_unlock(&priv->lock);
 	return ret;
 }
 
 static int mv3310_settime64(struct ptp_clock_info *ptp,
 			    const struct timespec64 *ts)
 {
-	int ret = 0;
-	unsigned long flags;
-
+	int ret;
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 	struct phy_device *phydev = priv->phydev;
 
+	mutex_lock(&priv->lock);
 	/* Load the new timestamp */
-	if (!spin_trylock_irqsave(&priv->lock, flags))
-		return -EBUSY;
-
 	ret = mv3310_write_tod(phydev, ts);
 	if (ret < 0)
 		goto unlock_out;
@@ -386,16 +379,14 @@ static int mv3310_settime64(struct ptp_clock_info *ptp,
 	ret = mv3310_trigger_ptp_op(phydev, MV_V2_PTP_TOD_FUNC_CFG_UPDATE);
 
 unlock_out:
-	spin_unlock_irqrestore(&priv->lock, flags);
+	mutex_unlock(&priv->lock);
 	return ret;
 }
 
 static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 {
-	int ret = 0;
-	unsigned long flags;
+	int ret;
 	const struct timespec64 ts = ns_to_timespec64(abs(delta));
-
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 	struct phy_device *phydev = priv->phydev;
@@ -403,10 +394,8 @@ static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	if (delta == 0)
 		return 0;
 
+	mutex_lock(&priv->lock);
 	/* Load the new timestamp */
-	if (!spin_trylock_irqsave(&priv->lock, flags))
-		return -EBUSY;
-
 	ret = mv3310_write_tod(phydev, &ts);
 	if (ret < 0)
 		goto unlock_out;
@@ -416,25 +405,32 @@ static int mv3310_adjtime(struct ptp_clock_info *ptp, s64 delta)
 				    delta < 0 ? MV_V2_PTP_TOD_FUNC_CFG_DECR :
 						MV_V2_PTP_TOD_FUNC_CFG_INCR);
 unlock_out:
-	spin_unlock_irqrestore(&priv->lock, flags);
+	mutex_unlock(&priv->lock);
 	return ret;
 }
 
 static int mv3310_enable(struct ptp_clock_info *ptp,
 			 struct ptp_clock_request *request, int on)
 {
+	unsigned long flags;
 	int ret = 0;
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 
 	switch (request->type) {
 	case PTP_CLK_REQ_EXTTS:
-		priv->extts_enabled = on != 0;
+		spin_lock_irqsave(&priv->extts_reqs_lock, flags);
+		priv->extts_reqs = (on != 0) ? (priv->extts_reqs + 1) :
+					       max(priv->extts_reqs - 1, 0);
 
-		if (priv->extts_enabled)
+		if (priv->extts_reqs == 1U)
 			ptp_schedule_worker(priv->clock, 0);
-		else
+		else if (priv->extts_reqs == 0U)
 			ptp_cancel_worker_sync(priv->clock);
+		else
+			/* nothing to do, worker is already active */;
+
+		spin_unlock_irqrestore(&priv->extts_reqs_lock, flags);
 		break;
 
 	default:
@@ -447,22 +443,17 @@ static int mv3310_enable(struct ptp_clock_info *ptp,
 
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 {
+	struct ptp_clock_event event;
+	struct timespec64 ts;
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 
-	if (priv->extts_enabled) {
-		struct ptp_clock_event event;
-		struct timespec64 ts;
-
-		if (mv3310_getppstime(ptp, &ts) == 0) {
-			event.type = PTP_CLOCK_EXTTS;
-			event.index = 0; /* We only have one channel */
-			event.timestamp = timespec64_to_ns(&ts);
-			ptp_clock_event(priv->clock, &event);
-		}
-
-		return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
+	if (mv3310_getppstime(ptp, &ts) == 0) {
+		event.type = PTP_CLOCK_EXTTS;
+		event.index = 0; /* We only have one channel */
+		event.timestamp = timespec64_to_ns(&ts);
+		ptp_clock_event(priv->clock, &event);
 	}
 
-	return msecs_to_jiffies(2000);
+	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 }

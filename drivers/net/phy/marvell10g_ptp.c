@@ -12,7 +12,6 @@
 #include <linux/phy.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/mutex.h>
-#include <linux/spinlock.h>
 
 #define MV_EXTTS_PERIOD_MS 95
 
@@ -55,8 +54,7 @@ struct mv3310_ptp_priv {
 	struct ptp_clock_info caps;
 	struct ptp_clock *clock;
 	struct mutex lock; /* Protects against concurrent MDIO register access */
-	u16 extts_reqs; /* Number of external timestamp requests */
-	spinlock_t extts_reqs_lock; /* Protects the extts_reqs variable */
+	bool extts_enabled;
 };
 
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
@@ -107,8 +105,7 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 
 	priv->phydev = phydev;
 	mutex_init(&priv->lock);
-	priv->extts_reqs = 0;
-	spin_lock_init(&priv->extts_reqs_lock);
+	priv->extts_enabled = false;
 
 	priv->caps.owner = THIS_MODULE;
 	strscpy(priv->caps.name, "mv10g-phy-phc", sizeof(priv->caps.name));
@@ -412,25 +409,20 @@ unlock_out:
 static int mv3310_enable(struct ptp_clock_info *ptp,
 			 struct ptp_clock_request *request, int on)
 {
-	unsigned long flags;
 	int ret = 0;
+	bool enable = on != 0;
 	struct mv3310_ptp_priv *priv =
 		container_of(ptp, struct mv3310_ptp_priv, caps);
 
 	switch (request->type) {
 	case PTP_CLK_REQ_EXTTS:
-		spin_lock_irqsave(&priv->extts_reqs_lock, flags);
-		priv->extts_reqs = (on != 0) ? (priv->extts_reqs + 1) :
-					       max(priv->extts_reqs - 1, 0);
-
-		if (priv->extts_reqs == 1U)
+		if (enable && !priv->extts_enabled)
 			ptp_schedule_worker(priv->clock, 0);
-		else if (priv->extts_reqs == 0U)
-			ptp_cancel_worker_sync(priv->clock);
-		else
-			/* nothing to do, worker is already active */;
 
-		spin_unlock_irqrestore(&priv->extts_reqs_lock, flags);
+		if (!enable && priv->extts_enabled)
+			ptp_cancel_worker_sync(priv->clock);
+
+		priv->extts_enabled = enable;
 		break;
 
 	default:

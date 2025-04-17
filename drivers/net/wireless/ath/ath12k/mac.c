@@ -6868,6 +6868,7 @@ static void ath12k_sta_set_4addr_wk(struct wiphy *wiphy, struct wiphy_work *wk)
 		ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
 						    WMI_VDEV_PARAM_AP_ENABLE_NAWDS,
 						    1);
+		arvif->nawds_support = true;
 	}
 }
 

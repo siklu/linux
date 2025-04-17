@@ -114,6 +114,8 @@ struct ath12k_dp_link_peer {
 	struct ath12k_dp_peer_stats peer_stats;
 	u32 tx_retry_failed;
 	u32 tx_retry_count;
+
+	u16 tcl_metadata;
 };
 
 void ath12k_dp_link_peer_unmap_event(struct ath12k_base *ab, u16 peer_id);

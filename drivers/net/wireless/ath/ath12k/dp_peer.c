@@ -564,6 +564,9 @@ int ath12k_dp_link_peer_assign(struct ath12k_dp *dp, struct ath12k_dp_hw *dp_hw,
 
 	peer->dp_peer = dp_peer;
 	peer->hw_link_id = hw_link_id;
+	peer->tcl_metadata |= u32_encode_bits(0, HTT_TCL_META_DATA_TYPE) |
+			      u32_encode_bits(peer->peer_id, HTT_TCL_META_DATA_PEER_ID);
+	peer->tcl_metadata &= ~HTT_TCL_META_DATA_VALID_HTT;
 
 	dp_peer->hw_links[peer->hw_link_id] = link_id;
 

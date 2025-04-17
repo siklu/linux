@@ -768,12 +768,14 @@ static void ath12k_wifi7_mac_op_tx(struct ieee80211_hw *hw,
 	struct ieee80211_hdr *hdr = (struct ieee80211_hdr *)skb->data;
 	struct ieee80211_key_conf *key = info->control.hw_key;
 	struct ieee80211_sta *sta = control->sta;
+	struct ath12k_link_sta *arsta = NULL;
 	struct ath12k_link_vif *tmp_arvif;
+	struct ath12k_sta *ahsta = NULL;
 	u32 info_flags = info->flags;
 	struct sk_buff *msdu_copied;
 	struct ath12k *ar, *tmp_ar;
 	struct ath12k_pdev_dp *dp_pdev, *tmp_dp_pdev;
-	struct ath12k_dp_link_peer *peer;
+	struct ath12k_dp_link_peer *peer = NULL;
 	unsigned long links_map;
 	bool is_mcast = false;
 	bool is_dvlan = false;
@@ -822,6 +824,16 @@ static void ath12k_wifi7_mac_op_tx(struct ieee80211_hw *hw,
 
 	ar = arvif->ar;
 	skb_cb->link_id = link_id;
+
+	if (sta) {
+		ahsta = ath12k_sta_to_ahsta(sta);
+		if (ahsta->use_4addr_set) {
+			arsta = rcu_dereference(ahsta->link[link_id]);
+			peer = arsta->peer;
+		}
+	}
+
+
 	/*
 	 * as skb_cb is common currently for dp and mgmt tx processing
 	 * set this in the common mac op tx function.
@@ -870,7 +882,7 @@ static void ath12k_wifi7_mac_op_tx(struct ieee80211_hw *hw,
 	if (!vif->valid_links || !is_mcast || is_dvlan ||
 	    (skb_cb->flags & ATH12K_SKB_HW_80211_ENCAP) ||
 	    test_bit(ATH12K_FLAG_RAW_MODE, &ar->ab->dev_flags)) {
-		ret = ath12k_wifi7_dp_tx(dp_pdev, arvif, skb, false, 0, is_mcast);
+		ret = ath12k_wifi7_dp_tx(dp_pdev, arvif, skb, false, 0, is_mcast, peer);
 		if (unlikely(ret)) {
 			ath12k_warn(ar->ab, "failed to transmit frame %d\n", ret);
 			ieee80211_free_txskb(ar->ah->hw, skb);
@@ -940,7 +952,7 @@ static void ath12k_wifi7_mac_op_tx(struct ieee80211_hw *hw,
 
 skip_peer_find:
 			ret = ath12k_wifi7_dp_tx(tmp_dp_pdev, tmp_arvif,
-						 msdu_copied, true, mcbc_gsn, is_mcast);
+						 msdu_copied, true, mcbc_gsn, is_mcast, peer);
 			if (unlikely(ret)) {
 				if (ret == -ENOMEM) {
 					/* Drops are expected during heavy multicast

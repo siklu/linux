@@ -416,11 +416,14 @@ static int mv3310_enable(struct ptp_clock_info *ptp,
 
 	switch (request->type) {
 	case PTP_CLK_REQ_EXTTS:
-		if (enable && !priv->extts_enabled)
-			ptp_schedule_worker(priv->clock, 0);
-
-		if (!enable && priv->extts_enabled)
-			ptp_cancel_worker_sync(priv->clock);
+		if (enable)
+			if (!priv->extts_enabled)
+				ptp_schedule_worker(priv->clock, 0);
+			else
+				ret = -EBUSY;
+		else
+			if (priv->extts_enabled)
+				ptp_cancel_worker_sync(priv->clock);
 
 		priv->extts_enabled = enable;
 		break;

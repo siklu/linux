@@ -2273,6 +2273,7 @@ enum wmi_tlv_service {
 	WMI_TLV_SERVICE_WMSK_COMPACTION_RX_TLVS = 361,
 
 	WMI_TLV_SERVICE_PEER_METADATA_V1A_V1B_SUPPORT = 365,
+	WMI_SERVICE_WDS_NULL_FRAME_SUPPORT = 421,
 	WMI_TLV_SERVICE_ETH_OFFLOAD = 461,
 
 	WMI_MAX_EXT2_SERVICE,
@@ -2324,6 +2325,11 @@ enum wmi_slot_time {
 enum wmi_preamble {
 	WMI_VDEV_PREAMBLE_LONG = 1,
 	WMI_VDEV_PREAMBLE_SHORT = 2,
+};
+
+enum wmi_peer_4addr_allow_frame {
+	WMI_PEER_4ADDR_ALLOW_DATA_FRAME = 1,
+	WMI_PEER_4ADDR_ALLOW_EAPOL_DATA_FRAME = 2,
 };
 
 enum wmi_peer_smps_state {
@@ -2490,6 +2496,7 @@ struct ath12k_wmi_resource_config_arg {
 	u32 ema_max_vap_cnt;
 	u32 ema_max_profile_period;
 	bool is_reg_cc_ext_event_supported;
+	bool is_wds_null_frame_supported;
 };
 
 struct ath12k_wmi_init_cmd_arg {
@@ -2546,7 +2553,10 @@ struct wmi_init_cmd {
 #define WMI_RSRC_CFG_FLAGS2_RX_PEER_METADATA_VERSION		GENMASK(5, 4)
 #define WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64	BIT(5)
 #define WMI_RSRC_CFG_FLAGS2_CALC_NEXT_DTIM_COUNT_SET      BIT(9)
+#define WMI_RSRC_CFG_FLAGS2_INTRABSS_MEC_WDS_LEARNING_DISABLE  BIT(15)
+#define WMI_RSRC_CFG_FLAGS2_FW_AST_INDICATION_DISABLE          BIT(18)
 #define WMI_RSRC_CFG_FLAG1_ACK_RSSI	BIT(18)
+#define WMI_RSRC_CFG_FLAGS2_WDS_NULL_FRAME_SUPPORT             BIT(22)
 
 struct ath12k_wmi_resource_config_params {
 	__le32 tlv_header;

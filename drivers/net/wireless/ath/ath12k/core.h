@@ -513,6 +513,8 @@ struct ath12k_link_sta {
 
 	/* peer addr based rhashtable list pointer */
 	struct rhash_head rhash_addr;
+
+	struct ath12k_dp_link_peer *peer;
 };
 
 struct ath12k_sta {
@@ -525,6 +527,8 @@ struct ath12k_sta {
 	u8 assoc_link_id;
 	u16 ml_peer_id;
 	u16 free_logical_link_idx_map;
+	bool use_4addr_set;
+	struct wiphy_work set_4addr_wk;
 
 	enum ieee80211_sta_state state;
 	u16 tcl_metadata;

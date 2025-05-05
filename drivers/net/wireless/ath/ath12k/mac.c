@@ -6833,6 +6833,7 @@ static void ath12k_mac_free_unassign_link_sta(struct ath12k_hw *ah,
 
 static void ath12k_sta_set_4addr_wk(struct wiphy *wiphy, struct wiphy_work *wk)
 {
+	struct ath12k_dp_link_peer *peer;
 	struct ath12k *ar;
 	struct ath12k_link_vif *arvif;
 	struct ath12k_sta *ahsta;
@@ -6862,6 +6863,18 @@ static void ath12k_sta_set_4addr_wk(struct wiphy *wiphy, struct wiphy_work *wk)
 						  WMI_PEER_USE_4ADDR,
 						  WMI_PEER_4ADDR_ALLOW_EAPOL_DATA_FRAME);
 		}
+		spin_lock_bh(&ar->ab->dp->dp_lock);
+		peer = ath12k_dp_link_peer_find_by_vdev_and_addr(ar->ab->dp, arvif->vdev_id,
+								 arsta->addr);
+		if (peer) {
+			peer->dp_peer->vdev_type_4addr |= BIT(ath12k_ahvif_to_vif(ahvif)->type);
+			peer->dp_peer->is_reset_mcbc = true;
+			arsta->tcl_metadata = peer->tcl_metadata;
+			arsta->ast_hash = peer->ast_hash;
+		}
+
+		spin_unlock_bh(&ar->ab->dp->dp_lock);
+
 		if (ahvif->dp_vif.tx_encap_type != ATH12K_HW_TXRX_ETHERNET)
 			continue;
 
@@ -6964,10 +6977,8 @@ static int ath12k_mac_station_unauthorize(struct ath12k *ar,
 
 	peer = ath12k_dp_link_peer_find_by_vdev_and_addr(dp, arvif->vdev_id,
 							 arsta->addr);
-	if (peer) {
+	if (peer)
 		peer->is_authorized = false;
-		arsta->peer = NULL;
-	}
 
 	spin_unlock_bh(&dp->dp_lock);
 
@@ -7002,11 +7013,8 @@ static int ath12k_mac_station_authorize(struct ath12k *ar,
 
 	peer = ath12k_dp_link_peer_find_by_vdev_and_addr(dp, arvif->vdev_id,
 							 arsta->addr);
-	if (peer) {
+	if (peer)
 		peer->is_authorized = true;
-		arsta->peer = peer;
-	} else
-		arsta->peer = NULL;
 
 	spin_unlock_bh(&dp->dp_lock);
 

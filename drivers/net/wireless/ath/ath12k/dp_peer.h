@@ -139,6 +139,8 @@ struct ath12k_dp_peer {
 
 	u16 sec_type_grp;
 	u16 sec_type;
+	u8 vdev_type_4addr;
+	bool is_reset_mcbc;
 
 	/* Info used in MMIC verification of * RX fragments */
 	struct crypto_shash *tfm_mmic;

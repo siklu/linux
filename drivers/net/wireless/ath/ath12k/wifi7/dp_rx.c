@@ -340,23 +340,25 @@ static void ath12k_wifi7_dp_rx_h_mpdu(struct ath12k_pdev_dp *dp_pdev,
 
 	/* PN for multicast packets will be checked in mac80211 */
 	rxcb = ATH12K_SKB_RXCB(msdu);
-	rxcb->is_mcbc = rx_info->is_mcbc;
 
-	if (rxcb->is_mcbc)
+	if (rx_info->is_mcbc)
 		rxcb->peer_id = rx_info->peer_id;
 
 	peer = ath12k_dp_peer_find_by_peerid(dp_pdev, rxcb->peer_id);
 	if (peer) {
-		/* resetting mcbc bit because mcbc packets are unicast
-		 * packets only for AP as STA sends unicast packets.
+		/* restting 4addr da mcbc packets as in 4addr mcbc packets are
+		 * unicast only and sta send sends unicast pkts only.
 		 */
-		rxcb->is_mcbc = rxcb->is_mcbc && !peer->ucast_ra_only;
+		rxcb->is_mcbc = rx_info->is_mcbc && !peer->is_reset_mcbc;
 
+
+		rx_info->is_4addr_sta = peer->vdev_type_4addr & BIT(NL80211_IFTYPE_STATION);
 		if (rxcb->is_mcbc)
 			enctype = peer->sec_type_grp;
 		else
 			enctype = peer->sec_type;
 	} else {
+		rxcb->is_mcbc = rx_info->is_mcbc;
 		enctype = HAL_ENCRYPT_TYPE_OPEN;
 	}
 
@@ -388,6 +390,15 @@ static void ath12k_wifi7_dp_rx_h_mpdu(struct ath12k_pdev_dp *dp_pdev,
 
 	ath12k_wifi7_dp_rx_h_csum_offload(msdu, rx_info);
 	ath12k_dp_rx_h_undecap(dp_pdev, msdu, enctype, is_decrypted, rx_info);
+
+	/* Drop the 3addr da_mcbc packets for 4addr sta as it will
+	 * double the packet for connected clients.
+	 */
+	if (rx_info->is_4addr_sta && rx_info->is_mcbc &&
+	    !rx_info->is_to_ds) {
+		rx_info->is_drop_packet = true;
+		return;
+	}
 
 	if (!is_decrypted || rx_info->is_mcbc)
 		return;
@@ -559,6 +570,11 @@ static int ath12k_wifi7_dp_rx_process_msdu(struct ath12k_pdev_dp *dp_pdev,
 	ath12k_dp_rx_h_ppdu(dp_pdev, rx_info);
 	ath12k_wifi7_dp_rx_h_mpdu(dp_pdev, msdu, rx_info);
 
+	if (rx_info->is_drop_packet) {
+		ret = -EINVAL;
+		goto free_out;
+	}
+
 	rx_info->rx_status->flag |= RX_FLAG_SKIP_MONITOR | RX_FLAG_DUP_VALIDATED;
 
 	return 0;
@@ -582,7 +598,7 @@ ath12k_wifi7_dp_rx_process_received_packets(struct ath12k_dp *dp,
 	struct ath12k_pdev_dp *dp_pdev;
 	struct ath12k_hw_link *hw_links = ag->hw_links;
 	struct ath12k_base *partner_ab;
-	struct hal_rx_desc_data rx_info;
+	struct hal_rx_desc_data rx_info = {0};
 	struct ath12k_dp *partner_dp;
 	u8 hw_link_id, pdev_idx;
 	int ret;
@@ -1095,6 +1111,9 @@ mic_fail:
 	ath12k_dp_rx_h_ppdu(dp_pdev, rx_info);
 	ath12k_dp_rx_h_undecap(dp_pdev, msdu, HAL_ENCRYPT_TYPE_TKIP_MIC, true,
 			       rx_info);
+	if (rx_info->is_drop_packet)
+		return -EINVAL;
+
 	ieee80211_rx(ath12k_pdev_dp_to_hw(dp_pdev), msdu);
 	return -EINVAL;
 }
@@ -1328,7 +1347,7 @@ ath12k_wifi7_dp_process_rx_err_buf(struct ath12k_pdev_dp *dp_pdev,
 	struct ath12k_hal *hal = dp->hal;
 	struct sk_buff *msdu;
 	struct ath12k_skb_rxcb *rxcb;
-	struct hal_rx_desc_data rx_info;
+	struct hal_rx_desc_data rx_info = {0};
 	struct hal_rx_desc *rx_desc;
 	u16 msdu_len;
 	u32 hal_rx_desc_sz = hal->hal_desc_sz;
@@ -1697,6 +1716,8 @@ static int ath12k_wifi7_dp_rx_h_null_q_desc(struct ath12k_pdev_dp *dp_pdev,
 
 	ath12k_dp_rx_h_ppdu(dp_pdev, rx_info);
 	ath12k_wifi7_dp_rx_h_mpdu(dp_pdev, msdu, rx_info);
+	if (rx_info->is_drop_packet)
+		return -EINVAL;
 
 	rxcb->tid = rx_info->tid;
 
@@ -1743,6 +1764,9 @@ static bool ath12k_wifi7_dp_rx_h_tkip_mic_err(struct ath12k_pdev_dp *dp_pdev,
 
 	ath12k_dp_rx_h_undecap(dp_pdev, msdu, HAL_ENCRYPT_TYPE_TKIP_MIC, false,
 			       rx_info);
+	if (rx_info->is_drop_packet)
+		return true;
+
 	return false;
 }
 
@@ -1817,7 +1841,7 @@ static void ath12k_wifi7_dp_rx_wbm_err(struct ath12k_pdev_dp *dp_pdev,
 	struct hal_rx_desc *rx_desc = (struct hal_rx_desc *)msdu->data;
 	struct ath12k_skb_rxcb *rxcb = ATH12K_SKB_RXCB(msdu);
 	struct ieee80211_rx_status rxs = {};
-	struct hal_rx_desc_data rx_info;
+	struct hal_rx_desc_data rx_info = {0};
 	bool drop = true;
 
 	rx_info.addr2_present = false;

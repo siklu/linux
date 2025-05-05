@@ -60,7 +60,7 @@ static int ath12k_wifi7_dp_prepare_htt_metadata(struct sk_buff *skb)
 /* TODO: Remove the export once this file is built with wifi7 ko */
 int ath12k_wifi7_dp_tx(struct ath12k_pdev_dp *dp_pdev, struct ath12k_link_vif *arvif,
 		       struct sk_buff *skb, bool gsn_valid, int mcbc_gsn,
-		       bool is_mcast, struct ath12k_dp_link_peer *peer)
+		       bool is_mcast, struct ath12k_link_sta *arsta)
 {
 	struct ath12k_dp *dp = dp_pdev->dp;
 	struct ath12k_hal *hal = dp->hal;
@@ -101,15 +101,15 @@ int ath12k_wifi7_dp_tx(struct ath12k_pdev_dp *dp_pdev, struct ath12k_link_vif *a
 	if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP)
 		eth = (struct ethhdr *)skb->data;
 
-	if (eth && is_multicast_ether_addr(eth->h_dest) && peer) {
-		ti.meta_data_flags = peer->tcl_metadata;
+	if (eth && is_multicast_ether_addr(eth->h_dest) && arsta) {
+		ti.meta_data_flags = arsta->tcl_metadata;
 		peer_id = u16_get_bits(ti.meta_data_flags, HTT_TCL_META_DATA_PEER_ID_MISSION);
-		ti.bss_ast_hash = peer->ast_hash;
+		ti.bss_ast_hash = arsta->ast_hash;
 		ti.bss_ast_idx = peer_id;
 		ti.lookup_override = true;
 	} else if (ieee80211_has_a4(hdr->frame_control) &&
-	    is_multicast_ether_addr(hdr->addr3) && peer) {
-		ti.meta_data_flags = peer->tcl_metadata;
+	    is_multicast_ether_addr(hdr->addr3) && arsta) {
+		ti.meta_data_flags = arsta->tcl_metadata;
 		ti.flags0 |= FIELD_PREP(HAL_TCL_DATA_CMD_INFO2_TO_FW, 1);
 	} else {
 		ti.meta_data_flags = dp_link_vif->tcl_metadata;

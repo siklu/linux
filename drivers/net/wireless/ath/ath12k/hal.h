@@ -751,6 +751,9 @@ struct hal_rx_desc_data {
 	u8 nss;
 	u8 sgi;
 	u8 tid;
+	bool is_4addr_sta;
+	bool is_drop_packet;
+	bool is_to_ds;
 };
 
 #define BUFFER_ADDR_INFO0_ADDR         GENMASK(31, 0)

@@ -120,7 +120,7 @@ struct mv3310_priv {
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct phy_device *phydev);
 int mv3310_ptp_power_down(struct phy_device *phydev);
-int mv3310_ptp_check_ucode(struct phy_device *phydev);
+int mv3310_ptp_start(struct phy_device *phydev);
 #else
 static inline struct mv3310_ptp_priv *
 mv3310_ptp_probe(struct phy_device *phydev)
@@ -135,7 +135,7 @@ static inline int mv3310_ptp_power_down(struct phy_device *phydev)
 {
 	return 0;
 }
-static inline int mv3310_ptp_check_ucode(struct phy_device *phydev)
+static inline int mv3310_ptp_start(struct phy_device *phydev)
 {
 	return 0;
 }
@@ -604,7 +604,7 @@ static int mv3310_start(struct phy_device *phydev)
 	if (ret < 0)
 		return ret;
 
-	ret = mv3310_ptp_check_ucode(phydev);
+	ret = mv3310_ptp_start(phydev);
 	if (ret < 0)
 		return ret;
 

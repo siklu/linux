@@ -22,6 +22,10 @@ enum {
 
 	/* Vendor2 MMD registers */
 	MV_V2_SLC_CFG_GEN		= 0x8000,
+	MV_V2_SLC_CFG_GEN_WMC_ADD_CRC	= BIT(8),
+	MV_V2_SLC_CFG_GEN_SMC_ADD_CRC	= BIT(9),
+	MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC	= BIT(10),
+	MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC	= BIT(11),
 	MV_V2_SLC_CFG_GEN_WMC_ANEG_EN	= BIT(23),
 	MV_V2_SLC_CFG_GEN_SMC_ANEG_EN	= BIT(24),
 	MV_V2_MODE_CFG 			= 0xf000,
@@ -249,9 +253,14 @@ int mv3310_ptp_power_up(struct phy_device *phydev)
 	   auto-negotiation is disabled by default. Enable:
 	   * WMC - auto negotiation for wire mac
 	   * SMC - auto negotiation for system mac */
+	/* LinkCrypt MAC Configuration: enable remove crc at rx and add back to tx */
 	ret = mv3310_set_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
 				      MV_V2_SLC_CFG_GEN_WMC_ANEG_EN |
-					      MV_V2_SLC_CFG_GEN_SMC_ANEG_EN);
+					      MV_V2_SLC_CFG_GEN_SMC_ANEG_EN |
+					      MV_V2_SLC_CFG_GEN_WMC_ADD_CRC |
+					      MV_V2_SLC_CFG_GEN_SMC_ADD_CRC |
+					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
+					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
 	if (ret < 0)
 		return ret;
 

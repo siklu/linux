@@ -39,6 +39,8 @@ enum {
 	MV_V2_PTP_CFG_GEN_EG		= 0xa100,
 	MV_V2_PTP_CFG_GEN_IG		= 0xa900,
 	MV_V2_PTP_CFG_GEN_H_ENABLE	= BIT(0),
+	MV_V2_PTP_CFG_IG_MODE		= 0xa938,
+	MV_V2_PTP_CFG_IG_MODE_ENABLE	= BIT(10),
 
 	MV_V2_PTP_LUT_KEY_EG_BASE	= 0xa700,
 	MV_V2_PTP_LUT_KEY_IG_BASE	= 0xaf00,
@@ -143,9 +145,9 @@ struct mv3310_ptp_priv {
 
 /* Public functions */
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
-int mv3310_ptp_power_up(struct phy_device *phydev);
+int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct phy_device *phydev);
-int mv3310_ptp_start(struct phy_device *phydev);
+int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 
 /* Helper functions */
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
@@ -236,18 +238,20 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	return priv;
 }
 
-int mv3310_ptp_power_up(struct phy_device *phydev)
+int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 {
 	int ret;
+	struct phy_device *phydev = priv->phydev;
 
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
 
+	mutex_lock(&priv->lock);
 	/* Enable M unit used for PTP */
 	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
 			       MV_V2_MODE_CFG_M_UNIT_PWRUP);
 	if (ret < 0)
-		return ret;
+		goto unlock_out;
 
 	/* PHY Errata section 4.4: after the M unit is powered up
 	   auto-negotiation is disabled by default. Enable:
@@ -262,9 +266,11 @@ int mv3310_ptp_power_up(struct phy_device *phydev)
 					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
 					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
 	if (ret < 0)
-		return ret;
+		goto unlock_out;
 
-	return 0;
+unlock_out:
+	mutex_unlock(&priv->lock);
+	return ret;
 }
 
 int mv3310_ptp_power_down(struct phy_device *phydev)
@@ -276,37 +282,43 @@ int mv3310_ptp_power_down(struct phy_device *phydev)
 				  MV_V2_MODE_CFG_M_UNIT_PWRUP);
 }
 
-int mv3310_ptp_start(struct phy_device *phydev)
+int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 {
 	int ret;
+	struct phy_device *phydev = priv->phydev;
 
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
 
+	mutex_lock(&priv->lock);
 	ret = mv3310_ptp_check_ucode(phydev);
 	if (ret < 0) {
 		dev_err(&phydev->mdio.dev, "failed to load PTP microcode: %d\n",
 			ret);
-		return ret;
+		goto unlock_out;
 	}
 
 	ret = mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_EG,
 				      MV_V2_PTP_CFG_GEN_H_ENABLE);
 	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_IG,
 				       MV_V2_PTP_CFG_GEN_H_ENABLE);
+	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_IG_MODE,
+				       MV_V2_PTP_CFG_IG_MODE_ENABLE);
 	if (ret < 0) {
 		dev_err(&phydev->mdio.dev, "failed to enable PTP core: %d\n",
 			ret);
-		return ret;
+		goto unlock_out;
 	}
 
 	ret = mv3310_ptp_set_lut(phydev);
 	if (ret < 0) {
 		dev_err(&phydev->mdio.dev, "failed to set PTP LUT: %d\n", ret);
-		return ret;
+		goto unlock_out;
 	}
 
-	return 0;
+unlock_out:
+	mutex_unlock(&priv->lock);
+	return ret;
 }
 
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)

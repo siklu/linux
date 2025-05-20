@@ -12,6 +12,7 @@
 #include <linux/phy.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/mutex.h>
+#include <linux/firmware.h>
 
 #define MV_EXTTS_PERIOD_MS 95
 
@@ -51,6 +52,7 @@ enum {
 	MV_V2_PTP_UPDATER_EG_UDATA	= 0xa400,
 	MV_V2_PTP_PARSER_IG_UDATA	= 0xaa00,
 	MV_V2_PTP_UPDATER_IG_UDATA	= 0xac00,
+	MV_V2_PTP_UDATA_EMPTY		= 0x30000,
 
 	MV_V2_PTP_TOD_LOAD_NSEC_FRAC 	= 0xbc2a,
 	MV_V2_PTP_TOD_LOAD_NSEC 	= 0xbc2c,
@@ -70,69 +72,6 @@ enum {
 	MV_V2_PTP_TOD_FUNC_CFG_INCR 	= BIT(30),
 	MV_V2_PTP_TOD_FUNC_CFG_DECR 	= BIT(31),
 	MV_V2_PTP_TOD_FUNC_CFG_CAPTURE 	= BIT(31) | BIT(30),
-};
-
-static const u32 mv3310_parser_ucode[] = {
-	0x200ea, 0x0d008, 0x0c140, 0x28427, 0x2cc27, 0x29c4a, 0x2a44a, 0x2c417,
-	0x2e4aa, 0x2ecb7, 0x2ac25, 0x28c37, 0x2b469, 0x2bc83, 0x294c6, 0x2f414,
-	0x0d840, 0x35452, 0x23836, 0x30000, 0x0e050, 0x07008, 0x30000, 0x0d0c0,
-	0x7cb23, 0x7dddb, 0x7bddb, 0x33167, 0x0d8e0, 0x1d802, 0x06040, 0x76b03,
-	0x1d804, 0x06040, 0x20003, 0x3700e, 0x30000, 0x1d808, 0x20028, 0x1d801,
-	0x28427, 0x2cc27, 0x29c4a, 0x2a44a, 0x2c417, 0x2b469, 0x2bc83, 0x294c6,
-	0x2ac25, 0x28c37, 0x2f414, 0x0d840, 0x35452, 0x30400, 0x1d801, 0x0d8a0,
-	0x35496, 0x30900, 0x0d8a0, 0x1e098, 0x35497, 0x30900, 0x3702c, 0x0d8a0,
-	0x28427, 0x2cc27, 0x2ac25, 0x29c4a, 0x2a44a, 0x2c417, 0x2b469, 0x2bc83,
-	0x294c6, 0x30000, 0x0d860, 0x0d8a0, 0x7c259, 0x0d8e0, 0x0d8e0, 0x7c359,
-	0x0d8e0, 0x0d8e0, 0x7c359, 0x0d8e0, 0x0d8e0, 0x7c359, 0x0d8e0, 0x0d8e0,
-	0x743db, 0x1e453, 0x2185e, 0x1e095, 0x1e494, 0x21067, 0x0d840, 0x1de4c,
-	0x35844, 0x24069, 0x35846, 0x24083, 0x35840, 0x30900, 0x1d802, 0x1d806,
-	0x20028, 0x37022, 0x0d840, 0x0c081, 0x1d804, 0x1de8c, 0x35884, 0x248ea,
-	0x1e050, 0x1de47, 0x3584a, 0x230ea, 0x1da44, 0x05900, 0x1c801, 0x35911,
-	0x240bb, 0x3592f, 0x2408d, 0x35904, 0x24069, 0x35929, 0x24083, 0x35932,
-	0x2409f, 0x0d900, 0x30000, 0x0d880, 0x1de8c, 0x35886, 0x248ea, 0x1d803,
-	0x37023, 0x0d900, 0x1d811, 0x1df08, 0x20077, 0x37025, 0x0d860, 0x1de4a,
-	0x30300, 0x2d467, 0x28427, 0x2cc27, 0x2ac25, 0x29c4a, 0x2a44a, 0x2b469,
-	0x2bc83, 0x294c6, 0x28c37, 0x0d840, 0x35452, 0x23836, 0x30000, 0x74ddb,
-	0x1d802, 0x0f00c, 0x0f024, 0x0d860, 0x35841, 0x240a8, 0x37020, 0x30000,
-	0x37026, 0x30000, 0x7d5ea, 0x0d860, 0x1e05b, 0x0e011, 0x0d9e0, 0x0d9a0,
-	0x3316e, 0x77928, 0x3722f, 0x1d802, 0x0f02c, 0x1d801, 0x20028, 0x7d5ea,
-	0x1d802, 0x0f02c, 0x20028, 0x37021, 0x0d8e0, 0x2dcc1, 0x2fcc1, 0x2f4ed,
-	0x30000, 0x1d801, 0x0d8e0, 0x358c0, 0x240c6, 0x3722d, 0x06050, 0x0d840,
-	0x709dc, 0x37020, 0x0f00c, 0x1d801, 0x0f024, 0x0f01c, 0x0f07c, 0x0f074,
-	0x0f06c, 0x0f064, 0x0f034, 0x0f03c, 0x1d805, 0x0f04c, 0x1d805, 0x775da,
-	0x0e037, 0x0e03e, 0x0d900, 0x30000, 0x1d801, 0x37000, 0x37028, 0x0f07c,
-	0x1d808, 0x0f00c, 0x0f074, 0x0f06c, 0x0f064, 0x0f024, 0x0f04c, 0x1d801,
-	0x0f018, 0x30000, 0x0c800, 0x3702f, 0x30000, 0x1d801, 0x0d8e0, 0x358c0,
-	0x240f2, 0x3722d, 0x06050, 0x0f04c, 0x1d805, 0x0f00c, 0x0f024, 0x1d80f,
-	0x37006, 0x37027, 0x0f060, 0x30000
-};
-
-static const u32 mv3310_updater_ucode[] = {
-	0x2008d, 0x0d055, 0x46801, 0x0d1c0, 0x0d088, 0x7d1bf, 0x7f10e, 0x76913,
-	0x42000, 0x8c450, 0x8c513, 0x8c489, 0x8c044, 0x20013, 0x42000, 0x8b450,
-	0x8b513, 0x8b489, 0x8b044, 0x75234, 0x7ca1b, 0x0d110, 0x0d0d1, 0x0d192,
-	0x7061b, 0xd4230, 0xdc611, 0x7493e, 0x07e08, 0x0d148, 0x1dd41, 0x71924,
-	0x40546, 0x8d754, 0x8d4d2, 0x2003e, 0x77926, 0x1d988, 0x40546, 0x0c141,
-	0x1dd4d, 0x1df4d, 0x7f92e, 0x474e5, 0x8d450, 0x2003e, 0x3316f, 0x474e5,
-	0x434c4, 0x8d513, 0x8d496, 0x2003e, 0x7493e, 0x7273e, 0x0d108, 0x7993b,
-	0x77c3b, 0x0fb10, 0x2003c, 0x0fb08, 0x1dd01, 0x40d03, 0x0514a, 0x1db41,
-	0x1dd41, 0x76a44, 0x48942, 0x49082, 0x7079c, 0x1d94a, 0x0d18f, 0x7524e,
-	0x72961, 0x535ba, 0x5b9db, 0xdbc0f, 0x330a8, 0x20061, 0x75961, 0x7078d,
-	0x0d105, 0x70454, 0xd1e27, 0xd9a06, 0x0d112, 0x70458, 0xd4230, 0xdc611,
-	0x0d111, 0x35506, 0x22061, 0x2305f, 0x0d110, 0x35507, 0x22061, 0xd4270,
-	0xdc651, 0x7316c, 0x330a8, 0x0d118, 0x7fc69, 0x535b7, 0x5b9d8, 0xdbc0f,
-	0x2006c, 0x535b7, 0x5b9d8, 0xdbfef, 0x7d27d, 0x7597d, 0x330a8, 0x640f0,
-	0x6c4d1, 0xec812, 0x5360d, 0x5ba2e, 0xdbc0f, 0x2587d, 0x7fe7d, 0x0d119,
-	0x0e064, 0x0e06c, 0x0e074, 0x3310f, 0x0e07c, 0x74281, 0x48948, 0x8d3ce,
-	0x8d34c, 0x1d948, 0x7d28f, 0x76185, 0x49944, 0x7418d, 0x7bf98, 0x7b7a2,
-	0x1d952, 0x4894a, 0x8d513, 0x8d491, 0x45082, 0x40000, 0x30000, 0x76196,
-	0x48944, 0x71995, 0x434c4, 0x40000, 0x30000, 0x8d450, 0x40000, 0x30000,
-	0x1d96a, 0x200b5, 0x1d962, 0x200b5, 0x75285, 0x7618d, 0x7bf9a, 0x7378d,
-	0x0fe08, 0x200a4, 0x7418d, 0x0fe00, 0x0d14a, 0x1dd41, 0x1c96e, 0x0d1c1,
-	0x0fe2e, 0x351c6, 0x240b2, 0x0fe2d, 0x351c6, 0x240b4, 0x0fe2f, 0x351c6,
-	0x240b4, 0x2008d, 0x1d954, 0x200b5, 0x1d944, 0x48948, 0x8d4d2, 0x752bc,
-	0x7cabc, 0x434c4, 0x40000, 0x30000, 0x8d450, 0x40000, 0x30000, 0x41400,
-	0x30000
 };
 
 struct mv3310_ptp_priv {
@@ -158,7 +97,7 @@ static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
 				    u32 regval);
 static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 				   u32 bits);
-static int mv3310_ptp_set_udata(struct phy_device *phydev, const u32 *udata,
+static int mv3310_ptp_set_udata(struct phy_device *phydev, const u8 *udata,
 				size_t udata_len, u32 baseaddr);
 
 /* TOD functions */
@@ -429,14 +368,15 @@ static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 	return 0;
 }
 
-static int mv3310_ptp_set_udata(struct phy_device *phydev, const u32 *udata,
+static int mv3310_ptp_set_udata(struct phy_device *phydev, const u8 *udata,
 				size_t udata_len, u32 baseaddr)
 {
 	int ret, i;
+	u32 regval;
 
-	for (i = 0; i < udata_len; i++) {
-		ret = mv3310_write_ptp_reg(phydev, baseaddr + (i * 2),
-					   udata[i]);
+	for (i = 0; i < udata_len / sizeof(u32); i++) {
+		memcpy(&regval, udata + (i * sizeof(u32)), sizeof(u32));
+		ret = mv3310_write_ptp_reg(phydev, baseaddr + (i * 2), regval);
 		if (ret < 0) {
 			dev_err(&phydev->mdio.dev,
 				"Failed to write PTP microcode address: %x\n",
@@ -675,9 +615,46 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 }
 
+static int mv3310_ptp_load_ucode(struct phy_device *phydev)
+{
+	const struct firmware *pr_entry;
+	const struct firmware *ur_entry;
+	const char *parser_ucode = "mrvl/x3310uc_pr.hdr";
+	const char *updater_ucode = "mrvl/x3310uc_ur.hdr";
+	int ret = 0;
+
+	ret |= request_firmware(&pr_entry, parser_ucode, &phydev->mdio.dev);
+	ret |= request_firmware(&ur_entry, updater_ucode, &phydev->mdio.dev);
+	if (ret < 0)
+		return ret;
+
+	/* Microcode size must be word-aligned */
+	if (((pr_entry->size % sizeof(u32)) != 0) ||
+	    ((ur_entry->size % sizeof(u32)) != 0)) {
+		dev_err(&phydev->mdio.dev, "firmware file invalid");
+		ret = -EINVAL;
+		goto out;
+	}
+
+	ret |= mv3310_ptp_set_udata(phydev, pr_entry->data, pr_entry->size,
+				    MV_V2_PTP_PARSER_EG_UDATA);
+	ret |= mv3310_ptp_set_udata(phydev, ur_entry->data, ur_entry->size,
+				    MV_V2_PTP_UPDATER_EG_UDATA);
+	ret |= mv3310_ptp_set_udata(phydev, pr_entry->data, pr_entry->size,
+				    MV_V2_PTP_PARSER_IG_UDATA);
+	ret |= mv3310_ptp_set_udata(phydev, ur_entry->data, ur_entry->size,
+				    MV_V2_PTP_UPDATER_IG_UDATA);
+	if (ret < 0)
+		goto out;
+
+out:
+	release_firmware(pr_entry);
+	release_firmware(ur_entry);
+	return ret;
+}
+
 static int mv3310_ptp_check_ucode(struct phy_device *phydev)
 {
-	int ret = 0;
 	u32 ig_parser_check = 0;
 	u32 eg_parser_check = 0;
 	u32 ig_updater_check = 0;
@@ -695,27 +672,14 @@ static int mv3310_ptp_check_ucode(struct phy_device *phydev)
 			    &ig_parser_check);
 	mv3310_read_ptp_reg(phydev, MV_V2_PTP_UPDATER_IG_UDATA,
 			    &ig_updater_check);
-	if (eg_parser_check == mv3310_parser_ucode[0] &&
-	    eg_updater_check == mv3310_updater_ucode[0] &&
-	    ig_parser_check == mv3310_parser_ucode[0] &&
-	    ig_updater_check == mv3310_updater_ucode[0])
+	if ((eg_parser_check != MV_V2_PTP_UDATA_EMPTY) &&
+	    (eg_updater_check != MV_V2_PTP_UDATA_EMPTY) &&
+	    (ig_parser_check != MV_V2_PTP_UDATA_EMPTY) &&
+	    (ig_updater_check != MV_V2_PTP_UDATA_EMPTY))
 		return 0;
 
 	dev_info(&phydev->mdio.dev, "loading PTP parser & updater microcode\n");
-	ret |= mv3310_ptp_set_udata(phydev, mv3310_parser_ucode,
-				    ARRAY_SIZE(mv3310_parser_ucode),
-				    MV_V2_PTP_PARSER_EG_UDATA);
-	ret |= mv3310_ptp_set_udata(phydev, mv3310_updater_ucode,
-				    ARRAY_SIZE(mv3310_updater_ucode),
-				    MV_V2_PTP_UPDATER_EG_UDATA);
-	ret |= mv3310_ptp_set_udata(phydev, mv3310_parser_ucode,
-				    ARRAY_SIZE(mv3310_parser_ucode),
-				    MV_V2_PTP_PARSER_IG_UDATA);
-	ret |= mv3310_ptp_set_udata(phydev, mv3310_updater_ucode,
-				    ARRAY_SIZE(mv3310_updater_ucode),
-				    MV_V2_PTP_UPDATER_IG_UDATA);
-
-	return ret;
+	return mv3310_ptp_load_ucode(phydev);
 }
 
 static int mv3310_ptp_set_lut(struct phy_device *phydev)
@@ -781,3 +745,6 @@ static int mv3310_ptp_set_lut(struct phy_device *phydev)
 
 	return 0;
 }
+
+MODULE_FIRMWARE("mrvl/x3310uc_pr.hdr");
+MODULE_FIRMWARE("mrvl/x3310uc_ur.hdr");

@@ -12,6 +12,7 @@
 #include <linux/phy.h>
 #include <linux/ptp_clock_kernel.h>
 #include <linux/mutex.h>
+#include <linux/sched.h>
 #include <linux/firmware.h>
 
 #define MV_EXTTS_PERIOD_MS 95
@@ -97,7 +98,7 @@ static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
 				    u32 regval);
 static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 				   u32 bits);
-static int mv3310_ptp_set_udata(struct phy_device *phydev, const u8 *udata,
+static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
 				size_t udata_len, u32 baseaddr);
 
 /* TOD functions */
@@ -115,7 +116,7 @@ static int mv3310_verify(struct ptp_clock_info *ptp, unsigned int pin,
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp);
 
 /* PTP functions */
-static int mv3310_ptp_check_ucode(struct phy_device *phydev);
+static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_set_lut(struct phy_device *phydev);
 
 static bool mv3310_is_ptp_supported(struct phy_device *phydev)
@@ -229,14 +230,14 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
 
-	mutex_lock(&priv->lock);
-	ret = mv3310_ptp_check_ucode(phydev);
+	ret = mv3310_ptp_check_ucode(priv);
 	if (ret < 0) {
 		dev_err(&phydev->mdio.dev, "failed to load PTP microcode: %d\n",
 			ret);
-		goto unlock_out;
+		return ret;
 	}
 
+	mutex_lock(&priv->lock);
 	ret = mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_EG,
 				      MV_V2_PTP_CFG_GEN_H_ENABLE);
 	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_IG,
@@ -368,11 +369,14 @@ static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 	return 0;
 }
 
-static int mv3310_ptp_set_udata(struct phy_device *phydev, const u8 *udata,
+static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
 				size_t udata_len, u32 baseaddr)
 {
 	int ret, i;
 	u32 regval;
+	struct phy_device *phydev = priv->phydev;
+
+	mutex_lock(&priv->lock);
 
 	for (i = 0; i < udata_len / sizeof(u32); i++) {
 		memcpy(&regval, udata + (i * sizeof(u32)), sizeof(u32));
@@ -385,6 +389,7 @@ static int mv3310_ptp_set_udata(struct phy_device *phydev, const u8 *udata,
 		}
 	}
 
+	mutex_unlock(&priv->lock);
 	return ret;
 }
 
@@ -615,46 +620,53 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 }
 
-static int mv3310_ptp_load_ucode(struct phy_device *phydev)
+static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv)
 {
+	struct phy_device *phydev = priv->phydev;
 	const struct firmware *pr_entry;
 	const struct firmware *ur_entry;
 	const char *parser_ucode = "mrvl/x3310uc_pr.hdr";
 	const char *updater_ucode = "mrvl/x3310uc_ur.hdr";
 	int ret = 0;
 
-	ret |= request_firmware(&pr_entry, parser_ucode, &phydev->mdio.dev);
-	ret |= request_firmware(&ur_entry, updater_ucode, &phydev->mdio.dev);
+	ret = request_firmware(&pr_entry, parser_ucode, &phydev->mdio.dev);
 	if (ret < 0)
 		return ret;
+
+	ret = request_firmware(&ur_entry, updater_ucode, &phydev->mdio.dev);
+	if (ret < 0)
+		goto out_release_pr;
 
 	/* Microcode size must be word-aligned */
 	if (((pr_entry->size % sizeof(u32)) != 0) ||
 	    ((ur_entry->size % sizeof(u32)) != 0)) {
 		dev_err(&phydev->mdio.dev, "firmware file invalid");
 		ret = -EINVAL;
-		goto out;
+		goto out_release_all;
 	}
 
-	ret |= mv3310_ptp_set_udata(phydev, pr_entry->data, pr_entry->size,
+	ret |= mv3310_ptp_set_udata(priv, pr_entry->data, pr_entry->size,
 				    MV_V2_PTP_PARSER_EG_UDATA);
-	ret |= mv3310_ptp_set_udata(phydev, ur_entry->data, ur_entry->size,
+	cond_resched();
+	ret |= mv3310_ptp_set_udata(priv, ur_entry->data, ur_entry->size,
 				    MV_V2_PTP_UPDATER_EG_UDATA);
-	ret |= mv3310_ptp_set_udata(phydev, pr_entry->data, pr_entry->size,
+	cond_resched();
+	ret |= mv3310_ptp_set_udata(priv, pr_entry->data, pr_entry->size,
 				    MV_V2_PTP_PARSER_IG_UDATA);
-	ret |= mv3310_ptp_set_udata(phydev, ur_entry->data, ur_entry->size,
+	cond_resched();
+	ret |= mv3310_ptp_set_udata(priv, ur_entry->data, ur_entry->size,
 				    MV_V2_PTP_UPDATER_IG_UDATA);
-	if (ret < 0)
-		goto out;
 
-out:
-	release_firmware(pr_entry);
+out_release_all:
 	release_firmware(ur_entry);
+out_release_pr:
+	release_firmware(pr_entry);
 	return ret;
 }
 
-static int mv3310_ptp_check_ucode(struct phy_device *phydev)
+static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv)
 {
+	struct phy_device *phydev = priv->phydev;
 	u32 ig_parser_check = 0;
 	u32 eg_parser_check = 0;
 	u32 ig_updater_check = 0;
@@ -664,6 +676,7 @@ static int mv3310_ptp_check_ucode(struct phy_device *phydev)
 		return 0;
 
 	/* Check if the microcode is already loaded */
+	mutex_lock(&priv->lock);
 	mv3310_read_ptp_reg(phydev, MV_V2_PTP_PARSER_EG_UDATA,
 			    &eg_parser_check);
 	mv3310_read_ptp_reg(phydev, MV_V2_PTP_UPDATER_EG_UDATA,
@@ -672,6 +685,8 @@ static int mv3310_ptp_check_ucode(struct phy_device *phydev)
 			    &ig_parser_check);
 	mv3310_read_ptp_reg(phydev, MV_V2_PTP_UPDATER_IG_UDATA,
 			    &ig_updater_check);
+	mutex_unlock(&priv->lock);
+
 	if ((eg_parser_check != MV_V2_PTP_UDATA_EMPTY) &&
 	    (eg_updater_check != MV_V2_PTP_UDATA_EMPTY) &&
 	    (ig_parser_check != MV_V2_PTP_UDATA_EMPTY) &&
@@ -679,7 +694,7 @@ static int mv3310_ptp_check_ucode(struct phy_device *phydev)
 		return 0;
 
 	dev_info(&phydev->mdio.dev, "loading PTP parser & updater microcode\n");
-	return mv3310_ptp_load_ucode(phydev);
+	return mv3310_ptp_load_ucode(priv);
 }
 
 static int mv3310_ptp_set_lut(struct phy_device *phydev)

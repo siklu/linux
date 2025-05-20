@@ -206,9 +206,6 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 					      MV_V2_SLC_CFG_GEN_SMC_ADD_CRC |
 					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
 					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
-	if (ret < 0)
-		goto unlock_out;
-
 unlock_out:
 	mutex_unlock(&priv->lock);
 	return ret;
@@ -252,10 +249,8 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	}
 
 	ret = mv3310_ptp_set_lut(phydev);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(&phydev->mdio.dev, "failed to set PTP LUT: %d\n", ret);
-		goto unlock_out;
-	}
 
 unlock_out:
 	mutex_unlock(&priv->lock);
@@ -346,11 +341,7 @@ static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
 	if (ret < 0)
 		return ret;
 
-	ret = mv3310_write_ptp_reg(phydev, regnum + 4, 0);
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	return mv3310_write_ptp_reg(phydev, regnum + 4, 0);
 }
 
 static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
@@ -363,11 +354,7 @@ static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 	if (ret < 0)
 		return ret;
 
-	ret = mv3310_write_ptp_reg(phydev, regnum, regval | bits);
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	return mv3310_write_ptp_reg(phydev, regnum, regval | bits);
 }
 
 static int mv3310_trigger_ptp_op(struct phy_device *phydev, int op)

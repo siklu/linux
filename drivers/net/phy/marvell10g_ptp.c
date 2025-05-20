@@ -98,8 +98,6 @@ static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
 				    u32 regval);
 static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 				   u32 bits);
-static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
-				size_t udata_len, u32 baseaddr);
 
 /* TOD functions */
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm);
@@ -116,6 +114,9 @@ static int mv3310_verify(struct ptp_clock_info *ptp, unsigned int pin,
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp);
 
 /* PTP functions */
+static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
+				size_t udata_len, u32 baseaddr);
+static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_set_lut(struct phy_device *phydev);
 
@@ -369,30 +370,6 @@ static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 	return 0;
 }
 
-static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
-				size_t udata_len, u32 baseaddr)
-{
-	int ret, i;
-	u32 regval;
-	struct phy_device *phydev = priv->phydev;
-
-	mutex_lock(&priv->lock);
-
-	for (i = 0; i < udata_len / sizeof(u32); i++) {
-		memcpy(&regval, udata + (i * sizeof(u32)), sizeof(u32));
-		ret = mv3310_write_ptp_reg(phydev, baseaddr + (i * 2), regval);
-		if (ret < 0) {
-			dev_err(&phydev->mdio.dev,
-				"Failed to write PTP microcode address: %x\n",
-				baseaddr + (i * 2));
-			break;
-		}
-	}
-
-	mutex_unlock(&priv->lock);
-	return ret;
-}
-
 static int mv3310_trigger_ptp_op(struct phy_device *phydev, int op)
 {
 	int ret;
@@ -618,6 +595,30 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 	}
 
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
+}
+
+static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
+				size_t udata_len, u32 baseaddr)
+{
+	int ret, i;
+	u32 regval;
+	struct phy_device *phydev = priv->phydev;
+
+	mutex_lock(&priv->lock);
+
+	for (i = 0; i < udata_len / sizeof(u32); i++) {
+		memcpy(&regval, udata + (i * sizeof(u32)), sizeof(u32));
+		ret = mv3310_write_ptp_reg(phydev, baseaddr + (i * 2), regval);
+		if (ret < 0) {
+				dev_err(&phydev->mdio.dev,
+					"Failed to write PTP microcode address: %x\n",
+					baseaddr + (i * 2));
+				break;
+		}
+	}
+
+	mutex_unlock(&priv->lock);
+	return ret;
 }
 
 static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv)

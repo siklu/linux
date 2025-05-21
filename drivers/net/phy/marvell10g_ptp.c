@@ -86,7 +86,7 @@ struct mv3310_ptp_priv {
 /* Public functions */
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
-int mv3310_ptp_power_down(struct phy_device *phydev);
+int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 
 /* Helper functions */
@@ -211,12 +211,12 @@ unlock_out:
 	return ret;
 }
 
-int mv3310_ptp_power_down(struct phy_device *phydev)
+int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv)
 {
-	if (!mv3310_is_ptp_supported(phydev))
+	if (!mv3310_is_ptp_supported(priv->phydev))
 		return 0;
 
-	return phy_clear_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
+	return phy_clear_bits_mmd(priv->phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
 				  MV_V2_MODE_CFG_M_UNIT_PWRUP);
 }
 
@@ -236,8 +236,9 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	}
 
 	mutex_lock(&priv->lock);
-	ret = mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_EG,
-				      MV_V2_PTP_CFG_GEN_H_ENABLE);
+	ret = 0;
+	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_EG,
+				       MV_V2_PTP_CFG_GEN_H_ENABLE);
 	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_GEN_IG,
 				       MV_V2_PTP_CFG_GEN_H_ENABLE);
 	ret |= mv3310_set_ptp_reg_bits(phydev, MV_V2_PTP_CFG_IG_MODE,
@@ -633,6 +634,7 @@ static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv)
 		goto out_release_all;
 	}
 
+	ret = 0;
 	ret |= mv3310_ptp_set_udata(priv, pr_entry->data, pr_entry->size,
 				    MV_V2_PTP_PARSER_EG_UDATA);
 	cond_resched();
@@ -659,9 +661,6 @@ static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv)
 	u32 eg_parser_check = 0;
 	u32 ig_updater_check = 0;
 	u32 eg_updater_check = 0;
-
-	if (!mv3310_is_ptp_supported(phydev))
-		return 0;
 
 	/* Check if the microcode is already loaded */
 	mutex_lock(&priv->lock);

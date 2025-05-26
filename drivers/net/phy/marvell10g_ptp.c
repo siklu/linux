@@ -14,6 +14,8 @@
 #include <linux/mutex.h>
 #include <linux/sched.h>
 #include <linux/firmware.h>
+#include <linux/netdevice.h>
+#include <linux/net_tstamp.h>
 
 #define MV_EXTTS_PERIOD_MS 95
 
@@ -80,6 +82,7 @@ struct mv3310_ptp_priv {
 	struct ptp_clock_info caps;
 	struct ptp_clock *clock;
 	struct mutex lock; /* Protects against concurrent MDIO register access */
+	struct mii_timestamper mii_ts;
 	bool extts_enabled;
 };
 
@@ -119,6 +122,14 @@ static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
 static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_set_lut(struct phy_device *phydev);
+static int mv3310_ptp_set_lut_actions(struct phy_device *phydev, bool enable_tx,
+				      bool enable_rx);
+
+/* Timestamping callbacks */
+static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,
+			      struct ifreq *ifreq);
+static int mv3310_ts_info(struct mii_timestamper *mii_ts,
+			  struct ethtool_ts_info *ts_info);
 
 static bool mv3310_is_ptp_supported(struct phy_device *phydev)
 {
@@ -147,6 +158,12 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	priv->phydev = phydev;
 	mutex_init(&priv->lock);
 	priv->extts_enabled = false;
+
+	/* Setup timestamping */
+	priv->mii_ts.hwtstamp = mv3310_ts_hwtstamp;
+	priv->mii_ts.ts_info = mv3310_ts_info;
+	priv->mii_ts.device = &phydev->mdio.dev;
+	priv->phydev->mii_ts = &priv->mii_ts;
 
 	priv->caps.owner = THIS_MODULE;
 	strscpy(priv->caps.name, "mv10g-phy-phc", sizeof(priv->caps.name));
@@ -734,16 +751,101 @@ static int mv3310_ptp_set_lut(struct phy_device *phydev)
 	if (ret < 0)
 		return ret;
 
+	return 0;
+}
+
+static int mv3310_ptp_set_lut_actions(struct phy_device *phydev, bool enable_tx,
+				      bool enable_rx)
+{
+	int ret;
+
 	/* Set Ingress (RX) LUT Action: INIPIGGYBACK
 	   Set Egress  (TX) LUT Action: UPDATERESIDENCE */
 	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_LUT_ACTION_IG_BASE,
-				   BIT(12));
+				   enable_rx ? BIT(12) : 0);
 	if (ret < 0)
 		return ret;
-	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_LUT_ACTION_EG_BASE,
-				   BIT(11));
-	if (ret < 0)
-		return ret;
+
+	return mv3310_write_ptp_reg(phydev, MV_V2_PTP_LUT_ACTION_EG_BASE,
+				    enable_tx ? BIT(11) : 0);
+}
+
+static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,
+			      struct ifreq *ifreq)
+{
+	int ret;
+	struct hwtstamp_config cfg;
+	bool enable_tx, enable_rx;
+	struct mv3310_ptp_priv *priv =
+		container_of(mii_ts, struct mv3310_ptp_priv, mii_ts);
+
+	if (copy_from_user(&cfg, ifreq->ifr_data, sizeof(cfg)))
+		return -EFAULT;
+
+	/* reserved for future extensions */
+	if (cfg.flags)
+		return -EINVAL;
+
+	switch (cfg.tx_type) {
+	case HWTSTAMP_TX_OFF:
+		enable_tx = false;
+		break;
+	case HWTSTAMP_TX_ON:
+		enable_tx = true;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	switch (cfg.rx_filter) {
+	case HWTSTAMP_FILTER_NONE:
+		enable_rx = false;
+		break;
+	case HWTSTAMP_FILTER_ALL:
+	case HWTSTAMP_FILTER_PTP_V1_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V1_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V1_L4_DELAY_REQ:
+		return -ERANGE;
+	case HWTSTAMP_FILTER_PTP_V2_L4_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L4_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L4_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_L2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_L2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_L2_DELAY_REQ:
+	case HWTSTAMP_FILTER_PTP_V2_EVENT:
+	case HWTSTAMP_FILTER_PTP_V2_SYNC:
+	case HWTSTAMP_FILTER_PTP_V2_DELAY_REQ:
+		enable_rx = true;
+		cfg.rx_filter = HWTSTAMP_FILTER_PTP_V2_EVENT;
+		break;
+	default:
+		return -ERANGE;
+	}
+
+	mutex_lock(&priv->lock);
+	ret = mv3310_ptp_set_lut_actions(priv->phydev, enable_tx, enable_rx);
+	mutex_unlock(&priv->lock);
+
+	if (ret < 0) {
+		dev_err(&priv->phydev->mdio.dev,
+			"failed to set PTP LUT actions: %d\n", ret);
+	}
+
+	return copy_to_user(ifreq->ifr_data, &cfg, sizeof(cfg)) ? -EFAULT : 0;
+}
+
+static int mv3310_ts_info(struct mii_timestamper *mii_ts,
+			  struct ethtool_ts_info *ts_info)
+{
+	struct mv3310_ptp_priv *priv =
+		container_of(mii_ts, struct mv3310_ptp_priv, mii_ts);
+
+	ts_info->so_timestamping =
+		SOF_TIMESTAMPING_TX_HARDWARE | SOF_TIMESTAMPING_RX_HARDWARE;
+	ts_info->phc_index = ptp_clock_index(priv->clock);
+	ts_info->tx_types = BIT(HWTSTAMP_TX_OFF) | BIT(HWTSTAMP_TX_ON);
+	ts_info->rx_filters =
+		BIT(HWTSTAMP_FILTER_NONE) | BIT(HWTSTAMP_FILTER_PTP_V2_EVENT);
 
 	return 0;
 }

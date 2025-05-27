@@ -40,6 +40,11 @@ enum {
 	MV_V2_INDIRECT_READ_DATA_LOW 	= 0x97fe,
 	MV_V2_INDIRECT_READ_DATA_HIGH 	= 0x97ff,
 
+	MV_V2_PTP_PARSER_EG_PAM_BASE	= 0xa000,
+	MV_V2_PTP_PARSER_IG_PAM_BASE	= 0xa800,
+	MV_V2_PTP_UPDATER_EG_PAM_BASE	= 0xa080,
+	MV_V2_PTP_UPDATER_IG_PAM_BASE	= 0xa880,
+
 	MV_V2_PTP_CFG_GEN_EG		= 0xa100,
 	MV_V2_PTP_CFG_GEN_IG		= 0xa900,
 	MV_V2_PTP_CFG_GEN_H_ENABLE	= BIT(0),
@@ -154,6 +159,7 @@ static int mv3310_verify(struct ptp_clock_info *ptp, unsigned int pin,
 static long mv3310_do_aux_work(struct ptp_clock_info *ptp);
 
 /* PTP functions */
+static int mv3310_ptp_set_pam(struct mv3310_ptp_priv *priv);
 static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,
 				size_t udata_len, u32 baseaddr);
 static int mv3310_ptp_load_ucode(struct mv3310_ptp_priv *priv);
@@ -281,6 +287,12 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 
 	if (!mv3310_is_ptp_supported(phydev))
 		return 0;
+
+	ret = mv3310_ptp_set_pam(priv);
+	if (ret < 0) {
+		dev_err(&phydev->mdio.dev, "failed to set PTP PAM: %d\n", ret);
+		return ret;
+	}
 
 	ret = mv3310_ptp_check_ucode(priv);
 	if (ret < 0) {
@@ -687,6 +699,66 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 	}
 
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
+}
+
+/* Configure Parser/Update PAM Range, except for settings pertaining to MACsec,
+ * LLC/SNAP, MPLS, TST header, Y1731. Without this configuration the parser
+ * will not identify, e.g., IPv4 packets. */
+static int mv3310_ptp_set_pam(struct mv3310_ptp_priv *priv)
+{
+	/* Mask used to obtain the IPv4 length in words */
+	const u32 IPV4_LEN_MASK = 0x0f00;
+	/* Bits [15:0] of one-second constant */
+	const u32 ONESECOND_LO = 0xca00;
+	/* Bits [31:16] of one-second constant */
+	const u32 ONESECOND_HI = 0x3b9a;
+	/* UDP Port # for PTP */
+	const u32 UDP_PORT_PTP = 320;
+	/* Values for hardware internal use */
+	const u32 ALL_ONE = 0xffff;
+	const u32 ONE = 0x0001;
+
+	int ret = 0;
+	struct phy_device *phydev = priv->phydev;
+
+	mutex_lock(&priv->lock);
+
+	/* TX Parser */
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 16), IPV4_LEN_MASK);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 25), ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 26), ONESECOND_HI);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 31), UDP_PORT_PTP);
+
+	/* RX Parser */
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_PARSER_IG_PAM_BASE + (2 * 16), IPV4_LEN_MASK);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_PARSER_IG_PAM_BASE + (2 * 31), UDP_PORT_PTP);
+
+	/* TX Update */
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 25), ALL_ONE);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 26), ONE);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 30), ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 31), ONESECOND_HI);
+
+	/* RX Update */
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_UPDATER_IG_PAM_BASE + (2 * 25), ALL_ONE);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_UPDATER_IG_PAM_BASE + (2 * 30), ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(
+		phydev, MV_V2_PTP_UPDATER_IG_PAM_BASE + (2 * 31), ONESECOND_HI);
+
+	mutex_unlock(&priv->lock);
+	return ret;
 }
 
 static int mv3310_ptp_set_udata(struct mv3310_ptp_priv *priv, const u8 *udata,

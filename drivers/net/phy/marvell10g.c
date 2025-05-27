@@ -992,14 +992,14 @@ static int mv3310_get_sset_count(struct phy_device *dev)
 
 static void mv3310_get_strings(struct phy_device *dev, u8 *data)
 {
-	return mv3310_ptp_get_strings(dev, data);
+	mv3310_ptp_get_strings(dev, data);
 }
 
 static void mv3310_get_stats(struct phy_device *dev,
 			     struct ethtool_stats *stats, u64 *data)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&dev->mdio.dev);
-	return mv3310_ptp_get_stats(dev, stats, data, priv->ptp_priv);
+	mv3310_ptp_get_stats(dev, stats, data, priv->ptp_priv);
 }
 
 static struct phy_driver mv3310_drivers[] = {

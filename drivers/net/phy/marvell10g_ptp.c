@@ -57,6 +57,9 @@ enum {
 	MV_V2_PTP_UPDATER_IG_UDATA	= 0xac00,
 	MV_V2_PTP_UDATA_EMPTY		= 0x30000,
 
+	MV_V2_PTP_EG_STATS_BASE		= 0xa180,
+	MV_V2_PTP_IG_STATS_BASE		= 0xa980,
+
 	MV_V2_PTP_TOD_LOAD_NSEC_FRAC 	= 0xbc2a,
 	MV_V2_PTP_TOD_LOAD_NSEC 	= 0xbc2c,
 	MV_V2_PTP_TOD_LOAD_SEC_LOW 	= 0xbc2e,
@@ -86,11 +89,45 @@ struct mv3310_ptp_priv {
 	bool extts_enabled;
 };
 
+struct mv3310_ptp_counter {
+	u32 regnum;
+	const char string[ETH_GSTRING_LEN];
+};
+
+static const struct mv3310_ptp_counter mv3310_ptp_stats[] = {
+	{ MV_V2_PTP_EG_STATS_BASE + 0x0c, "tx_ptp_drop" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x0e, "tx_ptp_update_res" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x18, "tx_ptp_v2" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x1a, "tx_ptp_udp" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x1c, "tx_ptp_ipv4" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x1e, "tx_ptp_ipv6" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x28, "tx_ptp_v1" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x2a, "tx_ptp_dot1q" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x2c, "tx_ptp_stag" },
+	{ MV_V2_PTP_EG_STATS_BASE + 0x36, "tx_ptp_err" },
+
+	{ MV_V2_PTP_IG_STATS_BASE + 0x0c, "rx_ptp_drop" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x10, "rx_ptp_ini_piggyback" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x18, "rx_ptp_v2" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x1a, "rx_ptp_udp" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x1c, "rx_ptp_ipv4" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x1e, "rx_ptp_ipv6" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x28, "rx_ptp_v1" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x2a, "rx_ptp_dot1q" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x2c, "rx_ptp_stag" },
+	{ MV_V2_PTP_IG_STATS_BASE + 0x36, "rx_ptp_err" },
+};
+
 /* Public functions */
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
+/* Get statistics from the PHY using ethtool */
+int mv3310_ptp_get_sset_count(struct phy_device *dev);
+void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data);
+void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
+			  u64 *data, struct mv3310_ptp_priv *priv);
 
 /* Helper functions */
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
@@ -273,6 +310,48 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 unlock_out:
 	mutex_unlock(&priv->lock);
 	return ret;
+}
+
+int mv3310_ptp_get_sset_count(struct phy_device *dev)
+{
+	if (!mv3310_is_ptp_supported(dev))
+		return 0;
+
+	return ARRAY_SIZE(mv3310_ptp_stats);
+}
+
+void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(mv3310_ptp_stats); i++) {
+		strscpy(data, mv3310_ptp_stats[i].string, ETH_GSTRING_LEN);
+		data += ETH_GSTRING_LEN;
+	}
+}
+
+void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
+			  u64 *data, struct mv3310_ptp_priv *priv)
+{
+	int i, ret;
+	u32 regval;
+
+	mutex_lock(&priv->lock);
+
+	for (i = 0; i < ARRAY_SIZE(mv3310_ptp_stats); i++) {
+		ret = mv3310_read_ptp_reg(dev, mv3310_ptp_stats[i].regnum,
+					  &regval);
+		if (ret < 0) {
+			dev_err(&dev->mdio.dev,
+				"failed to read PTP stat %s: %d\n",
+				mv3310_ptp_stats[i].string, ret);
+			data[i] = 0;
+		} else {
+			data[i] = regval;
+		}
+	}
+
+	mutex_unlock(&priv->lock);
 }
 
 static int mv3310_adjfine(struct ptp_clock_info *ptp, long scaled_ppm)

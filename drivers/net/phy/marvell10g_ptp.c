@@ -359,7 +359,11 @@ static int mv3310_write_ptp_lut_reg(struct phy_device *phydev, u32 regnum,
 	if (ret < 0)
 		return ret;
 
-	return mv3310_write_ptp_reg(phydev, regnum + 4, 0);
+	ret = mv3310_write_ptp_reg(phydev, regnum + 4, 0);
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
 static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
@@ -372,7 +376,11 @@ static int mv3310_set_ptp_reg_bits(struct phy_device *phydev, u32 regnum,
 	if (ret < 0)
 		return ret;
 
-	return mv3310_write_ptp_reg(phydev, regnum, regval | bits);
+	ret = mv3310_write_ptp_reg(phydev, regnum, regval | bits);
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
 static int mv3310_trigger_ptp_op(struct phy_device *phydev, int op)
@@ -705,49 +713,40 @@ static int mv3310_ptp_set_lut(struct phy_device *phydev)
 {
 	int ret;
 
-	/* Set Egress (TX) LUT Match Key..
+	/* Set Ingress/Egress LUT Match Key.
 	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
 	 *      0000              0000      0000 0010                    1
 	 *      PTPv2        Sync/Delay_Req     2                      PTPv2
 	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (value) = 000* (use 0 as *).
 	 * Ignore FLAGFIELD, DOMAINNUMBER. */
-	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE,
-				       0x00020001);
-	if (ret < 0)
-		return ret;
+	const u32 PTP_V2_LUT_MATCH_KEY = 0x00020001;
 
-	/* Set Egress (TX) LUT Match Enable. This is mask. Set to 1 bit positions
-	 * from Egress (TX) LUT Match Key above..
+	/* Set Ingress/Egress LUT Match Enable. This is mask. Set to 1 bit positions
+	 * from LUT Match Key above.
 	 * Check TRANSPORTSPECIFIC, MESSAGETYPE, VERSIONPTP and FLAGPTPV2:
 	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
 	 *      1111               1110      0000 1111                    1
 	 *      PTPv2        Sync/Delay_Req      2                      PTPv2
 	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (mask) = 1110. */
+	const u32 PTP_V2_LUT_MATCH_ENABLE = 0xfe0f0001;
+
+	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE,
+				       PTP_V2_LUT_MATCH_KEY);
+	if (ret < 0)
+		return ret;
+
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE + 8,
-				       0xfe0f0001);
+				       PTP_V2_LUT_MATCH_ENABLE);
 	if (ret < 0)
 		return ret;
 
-	/* Set Ingress (RX) LUT Match Key (what to compare with).
-	 * TRANSPORTSPECIFIC   MESSAGETYPE   VERSIONPTP ...(zeros)... FLAGPTPV2
-	 *      0000              0000       0000 0010                    1
-	 *      PTPv2        Sync/Delay_Req      2                      PTPv2
-	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (value) = 000* (use 0 as *).
-	 * Ignore FLAGFIELD, DOMAINNUMBER. */
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_IG_BASE,
-				       0x00020001);
+				       PTP_V2_LUT_MATCH_KEY);
 	if (ret < 0)
 		return ret;
 
-	/* Set Ingress (RX) LUT Match Enable. This is mask. Set to 1 bit positions
-	 * from Ingress (RX) LUT Match Key above.
-	 * Check TRANSPORTSPECIFIC, MESSAGETYPE, VERSIONPTP and FLAGPTPV2:
-	 * TRANSPORTSPECIFIC   MESSAGETYPE   VERSIONPTP ...(zeros)... FLAGPTPV2
-	 *      1111              1110       0000 1111                    1
-	 *      PTPv2        Sync/Delay_Req      2                      PTPv2
-	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (mask) = 1110. */
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_IG_BASE + 8,
-				       0xfe0f0001);
+				       PTP_V2_LUT_MATCH_ENABLE);
 	if (ret < 0)
 		return ret;
 
@@ -766,8 +765,12 @@ static int mv3310_ptp_set_lut_actions(struct phy_device *phydev, bool enable_tx,
 	if (ret < 0)
 		return ret;
 
-	return mv3310_write_ptp_reg(phydev, MV_V2_PTP_LUT_ACTION_EG_BASE,
-				    enable_tx ? BIT(11) : 0);
+	ret = mv3310_write_ptp_reg(phydev, MV_V2_PTP_LUT_ACTION_EG_BASE,
+				   enable_tx ? BIT(11) : 0);
+	if (ret < 0)
+		return ret;
+
+	return 0;
 }
 
 static int mv3310_ts_hwtstamp(struct mii_timestamper *mii_ts,

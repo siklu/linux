@@ -860,26 +860,32 @@ static int mv3310_ptp_check_ucode(struct mv3310_ptp_priv *priv)
 	return mv3310_ptp_load_ucode(priv);
 }
 
+/*
+ * Match PTPv2 event messages (Sync, Delay_Req, Pdelay_Req, Pdelay_Resp) in the
+ * Ingress/Egress LUT. Only these messages require an accurate timestamp.
+*/
 static int mv3310_ptp_set_lut(struct phy_device *phydev)
 {
 	int ret;
 
 	/* Set Ingress/Egress LUT Match Key.
-	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
-	 *      0000              0000      0000 0010                    1
-	 *      PTPv2        Sync/Delay_Req     2                      PTPv2
-	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (value) = 000* (use 0 as *).
-	 * Ignore FLAGFIELD, DOMAINNUMBER. */
+	 *   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
+	 *      0000      0000 0010                    1
+	 *     Event          2                      PTPv2
+	 * Sync = 0000, Delay_Req = 0001, Pdelay_Req = 0010, Pdelay_Resp = 0011
+	 * => MESSAGETYPE (value) = 00** (use 0 as *).
+	 * Ignore TRANSPORTSPECIFIC, FLAGFIELD, DOMAINNUMBER. */
 	const u32 PTP_V2_LUT_MATCH_KEY = 0x00020001;
 
 	/* Set Ingress/Egress LUT Match Enable. This is mask. Set to 1 bit positions
 	 * from LUT Match Key above.
-	 * Check TRANSPORTSPECIFIC, MESSAGETYPE, VERSIONPTP and FLAGPTPV2:
-	 * TRANSPORTSPECIFIC   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
-	 *      1111               1110      0000 1111                    1
-	 *      PTPv2        Sync/Delay_Req      2                      PTPv2
-	 * Sync = 0000, Delay_Req = 0001 => MESSAGETYPE (mask) = 1110. */
-	const u32 PTP_V2_LUT_MATCH_ENABLE = 0xfe0f0001;
+	 * Check MESSAGETYPE, VERSIONPTP and FLAGPTPV2:
+	 *   MESSAGETYPE  VERSIONPTP ...(zeros)... FLAGPTPV2
+	 *       1100      0000 1111                    1
+	 *      Event          2                      PTPv2
+	 * Sync = 0000, Delay_Req = 0001, Pdelay_Req = 0010, Pdelay_Resp = 0011
+	 * => MESSAGETYPE (mask) = 1100. */
+	const u32 PTP_V2_LUT_MATCH_ENABLE = 0x0c0f0001;
 
 	ret = mv3310_write_ptp_lut_reg(phydev, MV_V2_PTP_LUT_KEY_EG_BASE,
 				       PTP_V2_LUT_MATCH_KEY);

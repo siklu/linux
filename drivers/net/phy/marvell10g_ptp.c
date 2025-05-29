@@ -18,6 +18,7 @@
 #include <linux/net_tstamp.h>
 
 #define MV_EXTTS_PERIOD_MS 95
+#define PAM_ADDR(base, offset) ((base) + ((offset) * 2))
 
 enum {
 	/* PMA/PMD MMD Registers */
@@ -40,10 +41,10 @@ enum {
 	MV_V2_INDIRECT_READ_DATA_LOW 	= 0x97fe,
 	MV_V2_INDIRECT_READ_DATA_HIGH 	= 0x97ff,
 
-	MV_V2_PTP_PARSER_EG_PAM_BASE	= 0xa000,
-	MV_V2_PTP_PARSER_IG_PAM_BASE	= 0xa800,
-	MV_V2_PTP_UPDATER_EG_PAM_BASE	= 0xa080,
-	MV_V2_PTP_UPDATER_IG_PAM_BASE	= 0xa880,
+	MV_V2_PTP_PR_EG_PAM_BASE	= 0xa000,
+	MV_V2_PTP_PR_IG_PAM_BASE	= 0xa800,
+	MV_V2_PTP_UR_EG_PAM_BASE	= 0xa080,
+	MV_V2_PTP_UR_IG_PAM_BASE	= 0xa880,
 
 	MV_V2_PTP_CFG_GEN_EG		= 0xa100,
 	MV_V2_PTP_CFG_GEN_IG		= 0xa900,
@@ -701,17 +702,31 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);
 }
 
-/* Configure Parser/Update PAM Range, except for settings pertaining to MACsec,
- * LLC/SNAP, MPLS, TST header, Y1731. Without this configuration the parser
- * will not identify, e.g., IPv4 packets. */
+/* Configure Parser/Update PAM Range, except for settings pertaining to TST
+ * header, which is not used as this driver configures piggyback. Without this
+ * PAM configuration the parser will not identify, e.g., IPv4 packets. */
 static int mv3310_ptp_set_pam(struct mv3310_ptp_priv *priv)
 {
 	/* Mask used to obtain the IPv4 length in words */
 	const u32 IPV4_LEN_MASK = 0x0f00;
+	/* If Ethertype is <= this value, the packet's type is LLC/SNAP */
+	const u32 SAPLEN = 1500;
+	/* Bits [3:0] of Ethernet-over-MPLS tunnel label */
+	const u32 MPLS_LABEL_3_0 = 0x3000;
+	/* Mask used to obtain bits [3:0] of the MPLS label */
+	const u32 MPLS_LABEL_MASK = 0xf000;
+	/* Bits [23:8] of the LLC<DSAP-SSAP-CTRL> field of an LLC/SNAP packet */
+	const u32 DSAP_SSAP_23_8 = 0xaaaa;
+	/* Bits [7:0] of the LLC<DSAP-SSAP-CTRL> field of an LLC/SNAP packet */
+	const u32 DSAP_SSAP_7_0 = 0x0300;
+	/* Mask used to obtain bits [7:0] of the LLC<DSAP-SSAP-CTRL> field on an LLC/SNAP packet */
+	const u32 DSAP_SSAP_MASK = 0xff00;
 	/* Bits [15:0] of one-second constant */
 	const u32 ONESECOND_LO = 0xca00;
 	/* Bits [31:16] of one-second constant */
 	const u32 ONESECOND_HI = 0x3b9a;
+	/* EtherType for Y1731 */
+	const u32 UDP_Y131_ETYPE = 0x8902;
 	/* UDP Port # for PTP */
 	const u32 UDP_PORT_PTP = 320;
 	/* Values for hardware internal use */
@@ -719,43 +734,71 @@ static int mv3310_ptp_set_pam(struct mv3310_ptp_priv *priv)
 	const u32 ONE = 0x0001;
 
 	int ret = 0;
-	struct phy_device *phydev = priv->phydev;
+	struct phy_device *dev = priv->phydev;
 
 	mutex_lock(&priv->lock);
 
 	/* TX Parser */
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 16), IPV4_LEN_MASK);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 25), ONESECOND_LO);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 26), ONESECOND_HI);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_PARSER_EG_PAM_BASE + (2 * 31), UDP_PORT_PTP);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 16),
+				    IPV4_LEN_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 18),
+				    SAPLEN);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 20),
+				    MPLS_LABEL_3_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 21),
+				    MPLS_LABEL_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 22),
+				    DSAP_SSAP_23_8);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 23),
+				    DSAP_SSAP_7_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 24),
+				    DSAP_SSAP_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 25),
+				    ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 26),
+				    ONESECOND_HI);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 30),
+				    UDP_Y131_ETYPE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_EG_PAM_BASE, 31),
+				    UDP_PORT_PTP);
 
 	/* RX Parser */
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_PARSER_IG_PAM_BASE + (2 * 16), IPV4_LEN_MASK);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_PARSER_IG_PAM_BASE + (2 * 31), UDP_PORT_PTP);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 16),
+				    IPV4_LEN_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 18),
+				    SAPLEN);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 20),
+				    MPLS_LABEL_3_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 21),
+				    MPLS_LABEL_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 22),
+				    DSAP_SSAP_23_8);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 23),
+				    DSAP_SSAP_7_0);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 24),
+				    DSAP_SSAP_MASK);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 30),
+				    UDP_Y131_ETYPE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_PR_IG_PAM_BASE, 31),
+				    UDP_PORT_PTP);
 
 	/* TX Update */
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 25), ALL_ONE);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 26), ONE);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 30), ONESECOND_LO);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_UPDATER_EG_PAM_BASE + (2 * 31), ONESECOND_HI);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 25),
+				    ALL_ONE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 26),
+				    ONE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 30),
+				    ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_EG_PAM_BASE, 31),
+				    ONESECOND_HI);
 
 	/* RX Update */
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_UPDATER_IG_PAM_BASE + (2 * 25), ALL_ONE);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_UPDATER_IG_PAM_BASE + (2 * 30), ONESECOND_LO);
-	ret |= mv3310_write_ptp_reg(
-		phydev, MV_V2_PTP_UPDATER_IG_PAM_BASE + (2 * 31), ONESECOND_HI);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_IG_PAM_BASE, 25),
+				    ALL_ONE);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_IG_PAM_BASE, 30),
+				    ONESECOND_LO);
+	ret |= mv3310_write_ptp_reg(dev, PAM_ADDR(MV_V2_PTP_UR_IG_PAM_BASE, 31),
+				    ONESECOND_HI);
 
 	mutex_unlock(&priv->lock);
 	return ret;

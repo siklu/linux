@@ -248,7 +248,7 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 	int ret;
 	struct phy_device *phydev = priv->phydev;
 
-	if (priv == NULL)
+	if (!priv)
 		return 0;
 
 	mutex_lock(&priv->lock);
@@ -282,7 +282,7 @@ unlock_out:
 
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv)
 {
-	if (priv == NULL)
+	if (!priv)
 		return 0;
 
 	return phy_clear_bits_mmd(priv->phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
@@ -294,7 +294,7 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	int ret;
 	struct phy_device *phydev = priv->phydev;
 
-	if (priv == NULL)
+	if (!priv)
 		return 0;
 
 	ret = mv3310_ptp_set_pam(priv);
@@ -335,7 +335,7 @@ unlock_out:
 
 int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv)
 {
-	if (priv == NULL)
+	if (!priv)
 		return 0;
 
 	return ARRAY_SIZE(mv3310_ptp_stats);
@@ -357,7 +357,7 @@ void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
 	int i, ret;
 	u32 regval;
 
-	if (priv == NULL)
+	if (!priv)
 		return;
 
 	mutex_lock(&priv->lock);

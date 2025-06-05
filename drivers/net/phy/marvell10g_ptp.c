@@ -131,10 +131,10 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 /* Get statistics from the PHY using ethtool */
-int mv3310_ptp_get_sset_count(struct phy_device *dev);
-void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data);
-void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
-			  u64 *data, struct mv3310_ptp_priv *priv);
+int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
+void mv3310_ptp_get_strings(u8 *data);
+void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
+			  struct ethtool_stats *stats, u64 *data);
 
 /* Helper functions */
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
@@ -248,7 +248,7 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 	int ret;
 	struct phy_device *phydev = priv->phydev;
 
-	if (!mv3310_is_ptp_supported(phydev))
+	if (priv == NULL)
 		return 0;
 
 	mutex_lock(&priv->lock);
@@ -282,7 +282,7 @@ unlock_out:
 
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv)
 {
-	if (!mv3310_is_ptp_supported(priv->phydev))
+	if (priv == NULL)
 		return 0;
 
 	return phy_clear_bits_mmd(priv->phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG,
@@ -294,7 +294,7 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	int ret;
 	struct phy_device *phydev = priv->phydev;
 
-	if (!mv3310_is_ptp_supported(phydev))
+	if (priv == NULL)
 		return 0;
 
 	ret = mv3310_ptp_set_pam(priv);
@@ -333,15 +333,15 @@ unlock_out:
 	return ret;
 }
 
-int mv3310_ptp_get_sset_count(struct phy_device *dev)
+int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv)
 {
-	if (!mv3310_is_ptp_supported(dev))
+	if (priv == NULL)
 		return 0;
 
 	return ARRAY_SIZE(mv3310_ptp_stats);
 }
 
-void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data)
+void mv3310_ptp_get_strings(u8 *data)
 {
 	int i;
 
@@ -351,19 +351,22 @@ void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data)
 	}
 }
 
-void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
-			  u64 *data, struct mv3310_ptp_priv *priv)
+void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
+			  struct ethtool_stats *stats, u64 *data)
 {
 	int i, ret;
 	u32 regval;
 
+	if (priv == NULL)
+		return;
+
 	mutex_lock(&priv->lock);
 
 	for (i = 0; i < ARRAY_SIZE(mv3310_ptp_stats); i++) {
-		ret = mv3310_read_ptp_reg(dev, mv3310_ptp_stats[i].regnum,
-					  &regval);
+		ret = mv3310_read_ptp_reg(priv->phydev,
+					  mv3310_ptp_stats[i].regnum, &regval);
 		if (ret < 0) {
-			dev_err(&dev->mdio.dev,
+			dev_err(&priv->phydev->mdio.dev,
 				"failed to read PTP stat %s: %d\n",
 				mv3310_ptp_stats[i].string, ret);
 			data[i] = 0;

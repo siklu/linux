@@ -121,10 +121,10 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev);
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
-int mv3310_ptp_get_sset_count(struct phy_device *dev);
-void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data);
-void mv3310_ptp_get_stats(struct phy_device *dev, struct ethtool_stats *stats,
-			  u64 *data, struct mv3310_ptp_priv *priv);
+int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
+void mv3310_ptp_get_strings(u8 *data);
+void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
+			  struct ethtool_stats *stats, u64 *data);
 #else
 static inline struct mv3310_ptp_priv *
 mv3310_ptp_probe(struct phy_device *phydev)
@@ -143,16 +143,15 @@ static inline int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
-static inline int mv3310_ptp_get_sset_count(struct phy_device *dev)
+static inline int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv)
 {
 	return 0;
 }
-static inline void mv3310_ptp_get_strings(struct phy_device *dev, u8 *data)
+static inline void mv3310_ptp_get_strings(u8 *data)
 {
 }
-static inline void mv3310_ptp_get_stats(struct phy_device *dev,
-					struct ethtool_stats *stats, u64 *data,
-					struct mv3310_ptp_priv *priv)
+static inline void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
+					struct ethtool_stats *stats, u64 *data)
 {
 }
 #endif
@@ -987,19 +986,20 @@ static int mv3310_set_tunable(struct phy_device *phydev,
 
 static int mv3310_get_sset_count(struct phy_device *dev)
 {
-	return mv3310_ptp_get_sset_count(dev);
+	struct mv3310_priv *priv = dev_get_drvdata(&dev->mdio.dev);
+	return mv3310_ptp_get_sset_count(priv->ptp_priv);
 }
 
 static void mv3310_get_strings(struct phy_device *dev, u8 *data)
 {
-	mv3310_ptp_get_strings(dev, data);
+	mv3310_ptp_get_strings(data);
 }
 
 static void mv3310_get_stats(struct phy_device *dev,
 			     struct ethtool_stats *stats, u64 *data)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&dev->mdio.dev);
-	mv3310_ptp_get_stats(dev, stats, data, priv->ptp_priv);
+	mv3310_ptp_get_stats(priv->ptp_priv, stats, data);
 }
 
 static struct phy_driver mv3310_drivers[] = {

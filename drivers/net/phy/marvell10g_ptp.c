@@ -187,10 +187,9 @@ static bool mv3310_is_ptp_supported(struct phy_device *phydev)
 	if (ret < 0)
 		return false;
 
-	/* Indication that reset did not yet complete */
 	if (ret == 0) {
 		dev_err(&phydev->mdio.dev,
-			"failed to read XG Extended Status register\n");
+			"XG Ext Status = 0 (reset incomplete)\n");
 		return false;
 	}
 
@@ -202,7 +201,7 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	struct mv3310_ptp_priv *priv;
 
 	if (!mv3310_is_ptp_supported(phydev)) {
-		dev_info(&phydev->mdio.dev, "MACSEC/PTP is not present in this device\n");
+		dev_info(&phydev->mdio.dev, "PTP is not present in this device\n");
 		return NULL;
 	}
 

@@ -416,7 +416,7 @@ static void mv3310_ptp_reg_lockup_wa(struct phy_device *phydev, bool enable)
 {
 	u16 val = MV_V2_LINK_RESET_CFG_DEF_VAL;
 
-	if (enable)
+	if (!enable)
 		val |= MV_V2_LINK_RESET_CFG_LINK_DOWN;
 
 	phy_write_mmd(phydev, MDIO_MMD_VEND2, MV_V2_LINK_RESET_CFG, val);
@@ -462,6 +462,7 @@ static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
 		goto disable_wa;
 	*regval += ((ret & 0xffff) << 16);
 
+	ret = 0;
 disable_wa:
 	mv3310_ptp_reg_lockup_wa(phydev, false);
 	return ret;
@@ -480,7 +481,10 @@ static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum,
 		goto disable_wa;
 
 	ret = phy_write_mmd(phydev, MDIO_MMD_VEND2, regnum + 1, regval >> 16U);
+	if (ret < 0)
+		goto disable_wa;
 
+	ret = 0;
 disable_wa:
 	mv3310_ptp_reg_lockup_wa(phydev, false);
 	return ret;

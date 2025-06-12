@@ -201,6 +201,17 @@ static bool mv3310_is_ptp_supported(struct phy_device *phydev)
 	return !(ret & MV_PMA_XG_EXT_STATUS_PTP_UNSUPP);
 }
 
+static bool mv3310_is_ptp_powered_up(struct phy_device *phydev)
+{
+	int ret;
+
+	ret = phy_read_mmd(phydev, MDIO_MMD_VEND2, MV_V2_MODE_CFG);
+	if (ret < 0)
+		return false;
+
+	return !!(ret & MV_V2_MODE_CFG_M_UNIT_PWRUP);
+}
+
 struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 {
 	struct mv3310_ptp_priv *priv;
@@ -428,6 +439,10 @@ static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
 {
 	int ret;
 
+	/* If the M unit is powered down its registers are not accessible */
+	if (!mv3310_is_ptp_powered_up(phydev))
+		return -EAGAIN;
+
 	/* Enable workaround for potential PTP register lockup issue */
 	mv3310_ptp_reg_lockup_wa(phydev, true);
 
@@ -441,7 +456,8 @@ static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
 	if (ret < 0)
 		goto disable_wa;
 	if (ret != regnum) {
-		dev_err(&phydev->mdio.dev,
+		dev_err_ratelimited(
+			&phydev->mdio.dev,
 			"Indirect read address mismatch: %04x != %04x\n", ret,
 			regnum);
 		ret = -EINVAL;
@@ -472,6 +488,9 @@ static int mv3310_write_ptp_reg(struct phy_device *phydev, u32 regnum,
 				u32 regval)
 {
 	int ret;
+
+	if (!mv3310_is_ptp_powered_up(phydev))
+		return -EAGAIN;
 
 	/* Enable workaround for potential PTP register lockup issue */
 	mv3310_ptp_reg_lockup_wa(phydev, true);

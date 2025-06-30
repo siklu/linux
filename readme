@@ -1,0 +1,44 @@
+# POC for ath12k
+
+First time:
+## Get FW QCA:
+```sh
+wget "https://git.codelinaro.org/clo/ath-firmware/ath12k-firmware/-/archive/main/ath12k-firmware-main.zip"
+unzip ath12k-firmware-main.zip
+wget https://github.com/qca/qca-swiss-army-knife/raw/master/tools/scripts/ath12k/ath12k-fw-repo
+chmod +x ath12k-fw-repo
+cd ath12k-firmware-main
+../ath12k-fw-repo --install /nfsexport/lib/firmware/
+cp QCN9274/hw2.0/regdb.bin /nfsexport/lib/firmware/ath12k/QCN9274/hw2.0/
+```
+
+
+## Compile kernel and modules:
+Go to `/home/<user>/devices_build_siklu-arm64/tmp/work-shared/siklu-arm64/kernel-source`
+```sh
+git checkout shmuel-ath12k-expr
+export CROSS_COMPILE=../../../work/siklu_arm64-poky-linux/linux-arm64/5.10.110-r0/recipe-sysroot-native/usr/bin/aarch64-poky-linux/aarch64-poky-linux-
+cp siklu_arm64_defconfig .config
+make ARCH=arm64 oldconfig
+make ARCH=arm64 -j 12
+cp arm64/boot/Image /nfsexport/boot/
+cp -L ../../../../tmp/deploy/images/siklu-arm64/armada-8040-n366.dtb  /nfsexport/boot/
+cp drivers/soc/qcom/qmi_helpers.ko  /nfsexport/lib/modules/
+```
+
+## On device
+```
+echo 8 > /proc/sys/kernel/printk
+insmod /lib/modules/qmi_helpers.ko
+insmod /lib/modules/ath12k.ko  debug_mask=0xffffffff board_name=bus=pci,qmi-chip-id=0,qmi-board-id=30
+```
+
+## compile
+Go to `/home/<user>/devices_build_siklu-arm64/tmp/work-shared/siklu-arm64/kernel-source`
+Run:
+```
+export CROSS_COMPILE=../../../work/siklu_arm64-poky-linux/linux-arm64/5.10.110-r0/recipe-sysroot-native/usr/bin/aarch64-poky-linux/aarch64-poky-linux-
+make ARCH=arm64 -j 12
+cp drivers/net/wireless/ath/ath12k/ath12k.ko  /nfsexport/lib/modules/
+```
+

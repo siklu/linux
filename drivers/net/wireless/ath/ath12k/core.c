@@ -29,6 +29,11 @@ MODULE_PARM_DESC(debug_mask, "Debugging mask");
 bool ath12k_ftm_mode;
 module_param_named(ftm_mode, ath12k_ftm_mode, bool, 0444);
 MODULE_PARM_DESC(ftm_mode, "Boots up in factory test mode");
+int ath12k_board_id = ATH12K_BOARD_ID_DEFAULT;
+module_param_named(board_id, ath12k_board_id, int, 0644);
+char *ath12k_board_name;
+
+module_param_named(board_name, ath12k_board_name, charp , 0644);
 
 /* protected with ath12k_hw_group_mutex */
 static struct list_head ath12k_hw_group_list = LIST_HEAD_INIT(ath12k_hw_group_list);
@@ -215,7 +220,7 @@ static int __ath12k_core_create_board_name(struct ath12k_base *ab, char *name,
 			  ath12k_bus_str(ab->hif.bus),
 			  ab->qmi.target.chip_id,
 			  with_default ?
-			  ATH12K_BOARD_ID_DEFAULT : ab->qmi.target.board_id,
+			  ath12k_board_id : ab->qmi.target.board_id,
 			  variant);
 		break;
 	}
@@ -286,6 +291,7 @@ static int ath12k_core_parse_bd_ie_board(struct ath12k_base *ab,
 	int ret, board_ie_id;
 	size_t board_ie_len;
 	const void *board_ie_data;
+	boardname = ath12k_board_name;
 
 	name_match_found = false;
 
@@ -307,16 +313,29 @@ static int ath12k_core_parse_bd_ie_board(struct ath12k_base *ab,
 			goto out;
 		}
 
+		ath12k_dbg(ab, ATH12K_DBG_BOOT,
+				"checking %s for name '%s', ie data: %s",
+				ath12k_bd_ie_type_str(ie_id),
+				boardname, (char*)board_ie_data);
+
 		if (board_ie_id == name_id) {
 			ath12k_dbg_dump(ab, ATH12K_DBG_BOOT, "board name", "",
 					board_ie_data, board_ie_len);
 
-			if (board_ie_len != strlen(boardname))
+			if (board_ie_len != strlen(boardname)) {
+				ath12k_dbg(ab, ATH12K_DBG_BOOT,
+					   "boot found no match for board_ie_len name '%s', expected '%s', len: %zu: %lu",
+					   (char *)board_ie_data, boardname, board_ie_len, strlen(boardname));
 				goto next;
+			}
 
 			ret = memcmp(board_ie_data, boardname, strlen(boardname));
-			if (ret)
+			if (ret) {
+				ath12k_dbg(ab, ATH12K_DBG_BOOT,
+					   "boot found no match for name '%s', expected '%s', len: %zu: %lu",
+					   (char *)board_ie_data, boardname, board_ie_len, strlen(boardname));
 				goto next;
+			}
 
 			name_match_found = true;
 			ath12k_dbg(ab, ATH12K_DBG_BOOT,

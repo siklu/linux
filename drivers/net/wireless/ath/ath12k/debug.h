@@ -36,7 +36,9 @@ __printf(2, 3) void __ath12k_warn(struct device *dev, const char *fmt, ...);
 #define ath12k_warn(ab, fmt, ...) __ath12k_warn((ab)->dev, fmt, ##__VA_ARGS__)
 #define ath12k_hw_warn(ah, fmt, ...) __ath12k_warn((ah)->dev, fmt, ##__VA_ARGS__)
 
+extern char *ath12k_board_name;
 extern unsigned int ath12k_debug_mask;
+extern int ath12k_board_id;
 extern bool ath12k_ftm_mode;
 
 #ifdef CONFIG_ATH12K_DEBUG

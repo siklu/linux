@@ -9927,6 +9927,12 @@ static int rtl8152_probe_once(struct usb_interface *intf,
 
 	usb_set_intfdata(intf, tp);
 
+	if (dev_alloc_name(netdev, "usb%d") < 0) {
+		dev_err(&intf->dev, "Failed to allocate device name\n");
+		return -ENOMEM;
+	}
+
+	
 	netif_napi_add(netdev, &tp->napi, r8152_poll);
 
 	ret = register_netdev(netdev);

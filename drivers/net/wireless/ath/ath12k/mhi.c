@@ -18,6 +18,8 @@
 #define OTP_VALID_DUALMAC_BOARD_ID_MASK		0x1000
 #define MHI_CB_INVALID	0xff
 
+
+
 static const struct mhi_channel_config ath12k_mhi_channels_qcn9274[] = {
 	{
 		.num = 20,
@@ -274,6 +276,7 @@ static void ath12k_mhi_op_status_cb(struct mhi_controller *mhi_cntrl,
 	ath12k_dbg(ab, ATH12K_DBG_BOOT, "mhi notify status reason %s\n",
 		   ath12k_mhi_op_callback_to_str(cb));
 
+		   return;
 	switch (cb) {
 	case MHI_CB_SYS_ERROR:
 		ath12k_warn(ab, "firmware crashed: MHI_CB_SYS_ERROR\n");
@@ -337,7 +340,7 @@ int ath12k_mhi_register(struct ath12k_pci *ab_pci)
 		board_id =
 			ath12k_pci_read32(ab, ab->hw_params->otp_board_id_register);
 		board_id = u32_get_bits(board_id, OTP_BOARD_ID_MASK);
-
+		board_id = ath12k_board_id;
 		if (!board_id || (board_id == OTP_INVALID_BOARD_ID)) {
 			ath12k_dbg(ab, ATH12K_DBG_BOOT,
 				   "failed to read board id\n");

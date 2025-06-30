@@ -39,7 +39,7 @@
 #define ATH12K_FIRMWARE_MODE_OFF		4
 #define ATH12K_QMI_TARGET_MEM_MODE_DEFAULT	0
 
-#define ATH12K_BOARD_ID_DEFAULT	0xFF
+#define ATH12K_BOARD_ID_DEFAULT	0x4
 
 struct ath12k_base;
 struct ath12k_hw_group;

@@ -2814,7 +2814,7 @@ int ath12k_qmi_request_target_cap(struct ath12k_base *ab)
 	struct qmi_wlanfw_cap_req_msg_v01 req = {};
 	struct qmi_wlanfw_cap_resp_msg_v01 resp = {};
 	struct qmi_txn txn;
-	unsigned int board_id = ATH12K_BOARD_ID_DEFAULT;
+	unsigned int board_id = ath12k_board_id;
 	int ret = 0;
 	int r;
 	int i;

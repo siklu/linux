@@ -779,6 +779,7 @@ static long mv3310_do_aux_work(struct ptp_clock_info *ptp)
 		event.index = 0; /* We only have one channel */
 		event.timestamp = timespec64_to_ns(&ts);
 		ptp_clock_event(priv->clock, &event);
+		printk(KERN_INFO "TS=%lld\n", event.timestamp);
 	}
 
 	return msecs_to_jiffies(MV_EXTTS_PERIOD_MS);

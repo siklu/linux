@@ -3596,25 +3596,21 @@ int ath12k_qmi_event_load_bdf(struct ath12k_qmi *qmi)
 		ath12k_warn(ab, "qmi failed to req target capabilities:%d\n", ret);
 		return ret;
 	}
-#if 0
 	ret = ath12k_qmi_load_bdf_qmi(ab, ATH12K_QMI_BDF_TYPE_REGDB);
 	if (ret < 0) {
 		ath12k_warn(ab, "qmi failed to load regdb file:%d\n", ret);
 		return ret;
 	}
-#endif
 	ret = ath12k_qmi_load_bdf_qmi(ab, ATH12K_QMI_BDF_TYPE_ELF);
 	if (ret < 0) {
 		ath12k_warn(ab, "qmi failed to load board data file:%d\n", ret);
 		return ret;
 	}
-#if 0
 	if (ab->hw_params->download_calib) {
 		ret = ath12k_qmi_load_bdf_qmi(ab, ATH12K_QMI_BDF_TYPE_CALIBRATION);
 		if (ret < 0)
 			ath12k_warn(ab, "qmi failed to load calibrated data :%d\n", ret);
 	}
-#endif
 	ret = ath12k_qmi_wlanfw_m3_info_send(ab);
 	if (ret < 0) {
 		ath12k_warn(ab, "qmi failed to send m3 info req:%d\n", ret);

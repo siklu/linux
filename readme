@@ -21,7 +21,7 @@ export CROSS_COMPILE=../../../work/siklu_arm64-poky-linux/linux-arm64/5.10.110-r
 cp siklu_arm64_defconfig .config
 make ARCH=arm64 olddefconfig
 make ARCH=arm64 -j 12
-cp arm64/boot/Image /nfsexport/boot/
+cp arch/arm64/boot/Image /nfsexport/boot/
 rm /nfsexport/boot/fitImage
 cp -L ../../../../tmp/deploy/images/siklu-arm64/armada-8040-n366.dtb  /nfsexport/boot/
 cp drivers/soc/qcom/qmi_helpers.ko  /nfsexport/lib/modules/

@@ -5781,7 +5781,7 @@ static int mvpp2_ethtool_set_rxfh(struct net_device *dev,
 	return mvpp2_modify_rxfh_context(dev, NULL, rxfh, extack);
 }
 
-static int mvpp2_ethtool_get_rxfh_fields(struct net_device *dWev,
+static int mvpp2_ethtool_get_rxfh_fields(struct net_device *dev,
 					 struct ethtool_rxfh_fields *info)
 {
 	struct mvpp2_port *port = netdev_priv(dev);
@@ -5824,6 +5824,8 @@ static int mvpp2_ethtool_set_eee(struct net_device *dev,
 		return -EOPNOTSUPP;
 
 	return phylink_ethtool_set_eee(port->phylink, eee);
+}
+
 static u32 mvpp22_get_priv_flags(struct net_device *dev)
 {
 	struct mvpp2_port *port = netdev_priv(dev);

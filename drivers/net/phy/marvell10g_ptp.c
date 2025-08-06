@@ -103,6 +103,7 @@ struct mv3310_ptp_priv {
 	struct ptp_clock *clock;
 	struct mutex lock; /* Protects against concurrent MDIO register access */
 	struct mii_timestamper mii_ts;
+	int old_speed; /* Last speed used to set MRU */
 	bool extts_enabled;
 };
 
@@ -148,7 +149,7 @@ void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
 			  struct ethtool_stats *stats, u64 *data);
 
 /* General configuration functions */
-static int mv3310_set_mac_mru(struct phy_device *phydev, int speed);
+static int mv3310_set_mac_mru(struct mv3310_ptp_priv *priv, int speed);
 
 /* Helper functions */
 static int mv3310_read_ptp_reg(struct phy_device *phydev, u32 regnum,
@@ -235,6 +236,7 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 
 	priv->phydev = phydev;
 	mutex_init(&priv->lock);
+	priv->old_speed = SPEED_UNKNOWN;
 	priv->extts_enabled = false;
 
 	/* Setup timestamping */
@@ -305,7 +307,7 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
 
 	/* Increase the MRU for the default mode (XG) */
-	ret |= mv3310_set_mac_mru(phydev, SPEED_10000);
+	ret |= mv3310_set_mac_mru(priv, SPEED_10000);
 
 	/* Disable store-and-forward mode for egress drop FIFO. Without this
 	   setting there are time error spikes of up to 1200ns when performing
@@ -373,22 +375,22 @@ int mv3310_ptp_update(struct mv3310_ptp_priv *priv)
 		return 0;
 
 	mutex_lock(&priv->lock);
-	ret = mv3310_set_mac_mru(priv->phydev, priv->phydev->speed);
+	ret = mv3310_set_mac_mru(priv, priv->phydev->speed);
 	mutex_unlock(&priv->lock);
-	return 0;
+	return ret;
 }
 
-static int mv3310_set_mac_mru(struct phy_device *phydev, int speed)
+static int mv3310_set_mac_mru(struct mv3310_ptp_priv *priv, int speed)
 {
-	static int old_speed = SPEED_UNKNOWN;
 	const u32 MAX_MRU = 0x1fff; /* 16382 bytes */
 	int ret = 0;
+	struct phy_device *phydev = priv->phydev;
 
-	if ((old_speed != SPEED_UNKNOWN) &&
-	    ((speed < SPEED_5000 && old_speed < SPEED_5000) ||
-	     (speed >= SPEED_5000 && old_speed >= SPEED_5000))) {
+	if ((priv->old_speed != SPEED_UNKNOWN) &&
+	    ((speed < SPEED_5000 && priv->old_speed < SPEED_5000) ||
+	     (speed >= SPEED_5000 && priv->old_speed >= SPEED_5000))) {
 		/* No need to change the MRU if the new speed is in the same speed class */
-		old_speed = speed;
+		priv->old_speed = speed;
 		return 0;
 	}
 
@@ -411,7 +413,7 @@ static int mv3310_set_mac_mru(struct phy_device *phydev, int speed)
 				    "failed to set MRU for speed=%d (%d)\n",
 				    speed, ret);
 	else
-		old_speed = speed;
+		priv->old_speed = speed;
 
 	return ret;
 }

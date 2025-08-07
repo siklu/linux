@@ -240,10 +240,9 @@ static int adsp_load(struct rproc *rproc, const struct firmware *fw)
 		if (ret)
 			goto release_dtb_firmware;
 
-		ret = qcom_mdt_load_no_init(adsp->dev, adsp->dtb_firmware, adsp->dtb_firmware_name,
-					    adsp->dtb_pas_id, adsp->dtb_mem_region,
-					    adsp->dtb_mem_phys, adsp->dtb_mem_size,
-					    &adsp->dtb_mem_reloc);
+		ret = qcom_mdt_load_no_init(pas->dev, pas->dtb_firmware, pas->dtb_firmware_name,
+					    pas->dtb_mem_region, pas->dtb_mem_phys,
+					    pas->dtb_mem_size, &pas->dtb_mem_reloc);
 		if (ret)
 			goto release_dtb_metadata;
 	}
@@ -306,9 +305,9 @@ static int adsp_start(struct rproc *rproc)
 	if (ret)
 		goto disable_px_supply;
 
-	ret = qcom_mdt_load_no_init(adsp->dev, adsp->firmware, rproc->firmware, adsp->pas_id,
-				    adsp->mem_region, adsp->mem_phys, adsp->mem_size,
-				    &adsp->mem_reloc);
+	ret = qcom_mdt_load_no_init(pas->dev, pas->firmware, rproc->firmware,
+				    pas->mem_region, pas->mem_phys, pas->mem_size,
+				    &pas->mem_reloc);
 	if (ret)
 		goto release_pas_metadata;
 

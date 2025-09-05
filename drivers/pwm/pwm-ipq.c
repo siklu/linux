@@ -48,7 +48,7 @@ struct ipq_pwm_chip {
 
 static struct ipq_pwm_chip *ipq_pwm_from_chip(struct pwm_chip *chip)
 {
-	return container_of(chip, struct ipq_pwm_chip, chip);
+	return pwmchip_get_drvdata(chip);
 }
 
 static unsigned int ipq_pwm_reg_read(struct pwm_device *pwm, unsigned int reg)
@@ -216,9 +216,9 @@ static int ipq_pwm_probe(struct platform_device *pdev)
 	chip = devm_pwmchip_alloc(dev, 4, sizeof(*pwm));
 	if (IS_ERR(chip))
 		return PTR_ERR(chip);
-	pwm = pwmchip_get_drvdata(chip);
+	pwm = ipq_pwm_from_chip(chip);
 
-	platform_set_drvdata(pdev, pwm);
+	platform_set_drvdata(pdev, chip);
 
 	pwm->mem = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(pwm->mem))
@@ -247,9 +247,10 @@ static int ipq_pwm_probe(struct platform_device *pdev)
 
 static void ipq_pwm_remove(struct platform_device *pdev)
 {
-	struct ipq_pwm_chip *pwm = platform_get_drvdata(pdev);
+	struct pwm_chip *chip = platform_get_drvdata(pdev);
+	struct ipq_pwm_chip *pwm = ipq_pwm_from_chip(chip);
 
-	pwmchip_remove(&pwm->chip);
+	pwmchip_remove(chip);
 	clk_disable_unprepare(pwm->clk);
 }
 

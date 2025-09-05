@@ -42,7 +42,6 @@
 
 
 struct ipq_pwm_chip {
-	struct pwm_chip chip;
 	struct clk *clk;
 	void __iomem *mem;
 };
@@ -209,13 +208,15 @@ static const struct pwm_ops ipq_pwm_ops = {
 
 static int ipq_pwm_probe(struct platform_device *pdev)
 {
+	struct pwm_chip *chip;
 	struct ipq_pwm_chip *pwm;
 	struct device *dev = &pdev->dev;
 	int ret;
 
-	pwm = devm_kzalloc(dev, sizeof(*pwm), GFP_KERNEL);
-	if (!pwm)
-		return -ENOMEM;
+	chip = devm_pwmchip_alloc(dev, 4, sizeof(*pwm));
+	if (IS_ERR(chip))
+		return PTR_ERR(chip);
+	pwm = pwmchip_get_drvdata(chip);
 
 	platform_set_drvdata(pdev, pwm);
 
@@ -233,11 +234,9 @@ static int ipq_pwm_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret, "clock enable failed");
 
-	pwm->chip.dev = *dev;
-	pwm->chip.ops = &ipq_pwm_ops;
-	pwm->chip.npwm = 4;
+	chip->ops = &ipq_pwm_ops;
 
-	ret = pwmchip_add(&pwm->chip);
+	ret = pwmchip_add(chip);
 	if (ret < 0) {
 		dev_err_probe(dev, ret, "pwmchip_add() failed\n");
 		clk_disable_unprepare(pwm->clk);

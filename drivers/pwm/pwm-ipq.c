@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /*
- * Copyright (c) 2016-2017, 2020 The Linux Foundation. All rights reserved.
- */
+* Copyright (c) 2016-2017, 2020 The Linux Foundation. All rights reserved.
+*/
 
 #include <linux/module.h>
 #include <linux/platform_device.h>
@@ -17,15 +17,15 @@
 #define IPQ_PWM_MAX_PERIOD_NS	((u64)NSEC_PER_SEC)
 
 /*
- * The max value specified for each field is based on the number of bits
- * in the pwm control register for that field
- */
+* The max value specified for each field is based on the number of bits
+* in the pwm control register for that field
+*/
 #define IPQ_PWM_MAX_DIV		0xFFFF
 
 /*
- * Two 32-bit registers for each PWM: REG0, and REG1.
- * Base offset for PWM #i is at 8 * #i.
- */
+* Two 32-bit registers for each PWM: REG0, and REG1.
+* Base offset for PWM #i is at 8 * #i.
+*/
 #define IPQ_PWM_REG0			0 /*PWM_DIV PWM_HI*/
 #define IPQ_PWM_REG0_PWM_DIV		GENMASK(15, 0)
 #define IPQ_PWM_REG0_HI_DURATION	GENMASK(31, 16)
@@ -33,10 +33,10 @@
 #define IPQ_PWM_REG1			4 /*ENABLE UPDATE PWM_PRE_DIV*/
 #define IPQ_PWM_REG1_PRE_DIV		GENMASK(15, 0)
 /*
- * Enable bit is set to enable output toggling in pwm device.
- * Update bit is set to reflect the changed divider and high duration
- * values in register.
- */
+* Enable bit is set to enable output toggling in pwm device.
+* Update bit is set to reflect the changed divider and high duration
+* values in register.
+*/
 #define IPQ_PWM_REG1_UPDATE		BIT(30)
 #define IPQ_PWM_REG1_ENABLE		BIT(31)
 
@@ -60,7 +60,7 @@ static unsigned int ipq_pwm_reg_read(struct pwm_device *pwm, unsigned int reg)
 }
 
 static void ipq_pwm_reg_write(struct pwm_device *pwm, unsigned int reg,
-			      unsigned int val)
+				unsigned int val)
 {
 	struct ipq_pwm_chip *ipq_chip = ipq_pwm_from_chip(pwm->chip);
 	unsigned int off = 8 * pwm->hwpwm + reg;
@@ -76,9 +76,9 @@ static void config_div_and_duty(struct pwm_device *pwm, unsigned int pre_div,
 	unsigned long val = 0;
 
 	/*
-	 * high duration = pwm duty * (pwm div + 1)
-	 * pwm duty = duty_ns / period_ns
-	 */
+	* high duration = pwm duty * (pwm div + 1)
+	* pwm duty = duty_ns / period_ns
+	*/
 	hi_dur = div64_u64(duty_ns * rate, (pre_div + 1) * NSEC_PER_SEC);
 
 	val = FIELD_PREP(IPQ_PWM_REG0_HI_DURATION, hi_dur) |
@@ -96,7 +96,7 @@ static void config_div_and_duty(struct pwm_device *pwm, unsigned int pre_div,
 }
 
 static int ipq_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
-			 const struct pwm_state *state)
+			const struct pwm_state *state)
 {
 	struct ipq_pwm_chip *ipq_chip = ipq_pwm_from_chip(chip);
 	unsigned int pre_div, pwm_div, best_pre_div, best_pwm_div;
@@ -114,9 +114,9 @@ static int ipq_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 	duty_ns = min(state->duty_cycle, period_ns);
 
 	/*
-	 * period_ns is 1G or less. As long as rate is less than 16 GHz this
-	 * does not overflow.
-	 */
+	* period_ns is 1G or less. As long as rate is less than 16 GHz this
+	* does not overflow.
+	*/
 	period_rate = period_ns * rate;
 	best_pre_div = IPQ_PWM_MAX_DIV;
 	best_pwm_div = IPQ_PWM_MAX_DIV;
@@ -134,17 +134,17 @@ static int ipq_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 		pwm_div--;
 
 		/*
-		 * pre_div and pwm_div values swap produces the same
-		 * result. This loop goes over all pre_div <= pwm_div
-		 * combinations. The rest are equivalent.
-		 */
+		* pre_div and pwm_div values swap produces the same
+		* result. This loop goes over all pre_div <= pwm_div
+		* combinations. The rest are equivalent.
+		*/
 		if (pre_div > pwm_div)
 			break;
 
 		/*
-		 * Make sure we can do 100% duty cycle where
-		 * hi_dur == pwm_div + 1
-		 */
+		* Make sure we can do 100% duty cycle where
+		* hi_dur == pwm_div + 1
+		*/
 		if (pwm_div > IPQ_PWM_MAX_DIV - 1)
 			continue;
 
@@ -167,13 +167,13 @@ static int ipq_pwm_apply(struct pwm_chip *chip, struct pwm_device *pwm,
 
 	/* config divider values for the closest possible frequency */
 	config_div_and_duty(pwm, best_pre_div, best_pwm_div,
-			    rate, duty_ns, state->enabled);
+				rate, duty_ns, state->enabled);
 
 	return 0;
 }
 
 static int ipq_pwm_get_state(struct pwm_chip *chip, struct pwm_device *pwm,
-			      struct pwm_state *state)
+				struct pwm_state *state)
 {
 	struct ipq_pwm_chip *ipq_chip = ipq_pwm_from_chip(chip);
 	unsigned long rate = clk_get_rate(ipq_chip->clk);

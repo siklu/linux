@@ -2518,7 +2518,6 @@ static int idtcm_probe(struct platform_device *pdev)
 	// add the dpll as a hw clock. this is needed to cause the phys and pcies (modems) components
 	// to be called after the dpll initialization by creating clock dependencies in the 
 	// dts file (DEV-6442)
-	msleep(LOCK_TIMEOUT_MS); // let the ptp clocks settle down before registering the hw clock
 	err = internal_of_clk_add_hw_provider(pdev, idtcm);
 	if (err) {
 		ptp_clock_unregister_all(idtcm);

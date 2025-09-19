@@ -246,17 +246,8 @@ void dw8250_setup_port(struct uart_port *p)
 	u32 reg, old_dlf;
 
 	pd->hw_rs485_support = dw8250_detect_rs485_hw(p);
-	if (pd->hw_rs485_support) {
+	if (pd->hw_rs485_support)
 		p->rs485_config = dw8250_rs485_config;
-		up->lsr_save_mask = LSR_SAVE_FLAGS | DW_UART_LSR_ADDR_RCVD;
-		p->rs485_supported = dw8250_rs485_supported;
-	} else {
-		p->rs485_config = serial8250_em485_config;
-		p->rs485_supported = serial8250_em485_supported;
-		up->rs485_start_tx = serial8250_em485_start_tx;
-		up->rs485_stop_tx = serial8250_em485_stop_tx;
-	}
-	up->capabilities |= UART_CAP_NOTEMT;
 
 	/* Preserve value written by firmware or bootloader  */
 	old_dlf = dw8250_readl_ext(p, DW_UART_DLF);
@@ -288,7 +279,7 @@ void dw8250_setup_port(struct uart_port *p)
 		p->type = PORT_16550A;
 		p->flags |= UPF_FIXED_TYPE;
 		p->fifosize = DW_UART_CPR_FIFO_SIZE(reg);
-		up->capabilities = UART_CAP_FIFO | UART_CAP_NOTEMT;
+		up->capabilities = UART_CAP_FIFO;
 	}
 
 	if (reg & DW_UART_CPR_AFCE_MODE)

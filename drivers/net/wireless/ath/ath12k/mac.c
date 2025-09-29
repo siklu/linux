@@ -5653,7 +5653,10 @@ static int ath12k_mac_station_add(struct ath12k *ar,
 	ath12k_dbg(ab, ATH12K_DBG_MAC, "Added peer: %pM for VDEV: %d\n",
 		   arsta->addr, arvif->vdev_id);
 
-	if (ieee80211_vif_is_mesh(vif)) {
+	/* ------------------------------
+	   FORCE WDS / 4-ADDRESS MODE
+	   ----------------------------- */
+	// if (ieee80211_vif_is_mesh(vif)) {
 		ret = ath12k_wmi_set_peer_param(ar, arsta->addr,
 						arvif->vdev_id,
 						WMI_PEER_USE_4ADDR, 1);
@@ -5662,7 +5665,7 @@ static int ath12k_mac_station_add(struct ath12k *ar,
 				    arsta->addr, ret);
 			goto free_peer;
 		}
-	}
+	//}
 
 	ret = ath12k_dp_peer_setup(ar, arvif->vdev_id, arsta->addr);
 	if (ret) {

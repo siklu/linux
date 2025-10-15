@@ -18,9 +18,10 @@
 
 #include <linux/gpio/consumer.h>
 
-enum chips { sc18is602, sc18is602b, sc18is603 };
+enum chips { sc18is602, sc18is602b, sc18is603, sc18is606 };
 
 #define SC18IS602_BUFSIZ		200
+#define SC18IS602_MAX_BUFSIZ	1024
 #define SC18IS602_CLOCK			7372000
 
 #define SC18IS602_MODE_CPHA		BIT(2)
@@ -37,11 +38,12 @@ struct sc18is602 {
 	u8			ctrl;
 	u32			freq;
 	u32			speed;
+	size_t		bufsiz;
 
 	/* I2C data */
 	struct i2c_client	*client;
 	enum chips		id;
-	u8			buffer[SC18IS602_BUFSIZ + 1];
+	u8			buffer[SC18IS602_MAX_BUFSIZ + 1];
 	int			tlen;	/* Data queued for tx in buffer */
 	int			rindex;	/* Receive data index in buffer */
 
@@ -101,7 +103,7 @@ static int sc18is602_txrx(struct sc18is602 *hw, struct spi_message *msg,
 	}
 
 	if (do_transfer && hw->tlen > 1) {
-		ret = sc18is602_wait_ready(hw, SC18IS602_BUFSIZ);
+		ret = sc18is602_wait_ready(hw, hw->bufsiz);
 		if (ret < 0)
 			return ret;
 		ret = i2c_master_send(hw->client, hw->buffer, hw->tlen);
@@ -175,7 +177,9 @@ static int sc18is602_setup_transfer(struct sc18is602 *hw, u32 hz, u8 mode)
 static int sc18is602_check_transfer(struct spi_device *spi,
 				    struct spi_transfer *t, int tlen)
 {
-	if (t && t->len + tlen > SC18IS602_BUFSIZ + 1)
+	struct sc18is602 *hw = spi_controller_get_devdata(spi->controller);
+
+	if (t && t->len + tlen > hw->bufsiz + 1)
 		return -EINVAL;
 
 	return 0;
@@ -222,7 +226,9 @@ static int sc18is602_transfer_one(struct spi_controller *host,
 
 static size_t sc18is602_max_transfer_size(struct spi_device *spi)
 {
-	return SC18IS602_BUFSIZ;
+	struct sc18is602 *hw = spi_controller_get_devdata(spi->controller);
+	
+	return hw->bufsiz;
 }
 
 static int sc18is602_setup(struct spi_device *spi)
@@ -271,16 +277,23 @@ static int sc18is602_probe(struct i2c_client *client)
 	case sc18is602:
 	case sc18is602b:
 		host->num_chipselect = 4;
+		hw->bufsiz = 200;
 		hw->freq = SC18IS602_CLOCK;
 		break;
 	case sc18is603:
 		host->num_chipselect = 2;
+		hw->bufsiz = 200;
 		if (pdata)
 			hw->freq = pdata->clock_frequency;
 		else
 			device_property_read_u32(dev, "clock-frequency", &hw->freq);
 		if (!hw->freq)
 			hw->freq = SC18IS602_CLOCK;
+		break;
+	case sc18is606:
+		host->num_chipselect = 3;
+		hw->bufsiz = 1024;
+		hw->freq = SC18IS602_CLOCK;
 		break;
 	}
 	host->bus_num = dev_fwnode(dev) ? -1 : client->adapter->nr;
@@ -300,6 +313,7 @@ static const struct i2c_device_id sc18is602_id[] = {
 	{ "sc18is602", sc18is602 },
 	{ "sc18is602b", sc18is602b },
 	{ "sc18is603", sc18is603 },
+	{ "sc18is606", sc18is606 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, sc18is602_id);
@@ -316,6 +330,10 @@ static const struct of_device_id sc18is602_of_match[] = {
 	{
 		.compatible = "nxp,sc18is603",
 		.data = (void *)sc18is603
+	},
+	{
+		.compatible = "nxp,sc18is606",
+		.data = (void *)sc18is606
 	},
 	{ },
 };

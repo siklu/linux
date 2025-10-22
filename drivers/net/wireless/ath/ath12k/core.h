@@ -453,6 +453,7 @@ struct ath12k_sta {
 	enum hal_pn_type pn_type;
 
 	struct work_struct update_wk;
+	struct work_struct set_4addr_wk;
 	struct rate_info txrate;
 	struct rate_info last_txrate;
 	u64 rx_duration;

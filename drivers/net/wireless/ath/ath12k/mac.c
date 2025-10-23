@@ -4527,7 +4527,7 @@ static int ath12k_mac_station_add(struct ath12k *ar,
 	ath12k_dbg(ab, ATH12K_DBG_MAC, "Added peer: %pM for VDEV: %d\n",
 		   sta->addr, arvif->vdev_id);
 
-	if (ieee80211_vif_is_mesh(vif)) {
+	if (ieee80211_vif_is_mesh(vif) || vif->type == NL80211_IFTYPE_AP) {
 		ath12k_dbg(ab, ATH12K_DBG_MAC,
 			   "setting USE_4ADDR for mesh STA %pM\n", sta->addr);
 		ret = ath12k_wmi_set_peer_param(ar, sta->addr,
@@ -4772,11 +4772,11 @@ static void ath12k_mac_op_sta_set_4addr(struct ieee80211_hw *hw,
 					struct ieee80211_vif *vif,
 					struct ieee80211_sta *sta, bool enabled)
 {
-	struct ath12k *ar = hw->priv;
-	struct ath12k_sta *arsta = (struct ath12k_sta *)sta->drv_priv;
+	struct ath12k_hw *ah = ath12k_hw_to_ah(hw);
+	struct ath12k_sta *arsta = ath12k_sta_to_arsta(sta);
 
 	if (enabled && !arsta->use_4addr_set) {
-		ieee80211_queue_work(ath12k_ar_to_hw(ar), &arsta->set_4addr_wk);
+		ieee80211_queue_work(ah->hw, &arsta->set_4addr_wk);
 		arsta->use_4addr_set = true;
 	}
 }

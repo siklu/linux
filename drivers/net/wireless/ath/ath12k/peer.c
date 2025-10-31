@@ -332,7 +332,7 @@ int ath12k_peer_create(struct ath12k *ar, struct ath12k_vif *arvif,
 		arvif->ast_idx = peer->hw_peer_id;
 	}
 
-	if (vif->type == NL80211_IFTYPE_AP)
+	if (arvif->vif->type == NL80211_IFTYPE_AP)
 		peer->ucast_ra_only = true;
 
 	peer->sec_type = HAL_ENCRYPT_TYPE_OPEN;

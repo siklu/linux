@@ -3587,8 +3587,8 @@ static int _nl80211_parse_chandef(struct cfg80211_registered_device *rdev,
 		if (attrs[NL80211_ATTR_CENTER_FREQ1]) {
 			chandef->center_freq1 =
 				nla_get_u32(attrs[NL80211_ATTR_CENTER_FREQ1]);
-			chandef->freq1_offset = nla_get_u32_default(
-				attrs[NL80211_ATTR_CENTER_FREQ1_OFFSET], 0);
+			chandef->freq1_offset = attrs[NL80211_ATTR_CENTER_FREQ1_OFFSET] ? nla_get_u32(
+				attrs[NL80211_ATTR_CENTER_FREQ1_OFFSET]) : 0;
 		}
 
 		if (attrs[NL80211_ATTR_CENTER_FREQ2])
@@ -17774,7 +17774,10 @@ static int nl80211_assoc_ml_reconf(struct sk_buff *skb, struct genl_info *info)
 
 	add_links = 0;
 	if (info->attrs[NL80211_ATTR_MLO_LINKS]) {
-		err = nl80211_process_links(rdev, req.add_links, NULL, 0, info);
+		err = nl80211_process_links(rdev, req.add_links,
+									/* mark as MLO, but not assoc */
+									IEEE80211_MLD_MAX_NUM_LINKS,
+									NULL, 0, info);
 		if (err)
 			return err;
 

@@ -593,9 +593,23 @@ static int rv3028_ioctl(struct device *dev, unsigned int cmd, unsigned long arg)
 		ret = regmap_read(rv3028->regmap, RV3028_STATUS, &status);
 		if (ret < 0)
 			return ret;
-
-		status = status & RV3028_STATUS_PORF ? RTC_VL_DATA_INVALID : 0;
-		return put_user(status, (unsigned int __user *)arg);
+		
+		// will use ret for returning to userspace
+		ret = status & RV3028_STATUS_PORF ? RTC_VL_DATA_INVALID : 0;
+		if (status & RV3028_STATUS_BSF){
+			ret |= RTC_VL_BACKUP_SWITCH;
+		}
+		return put_user(ret, (unsigned int __user *)arg);
+	case RTC_VL_CLR:
+		ret = regmap_read(rv3028->regmap, RV3028_STATUS, &status);
+		if (ret < 0)
+			return ret;
+		
+		// set RV3028_STATUS_BSF to zero (reset backup switchower indication flag)
+		status &= ~RV3028_STATUS_BSF;
+		ret = regmap_write(rv3028->regmap, RV3028_STATUS, status);
+		if (ret < 0)
+			return ret;
 
 	default:
 		return -ENOIOCTLCMD;

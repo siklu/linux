@@ -6339,9 +6339,8 @@ static int nand_scan_tail(struct nand_chip *chip)
 	if (!base->ecc.ctx.nsteps)
 		base->ecc.ctx.nsteps = ecc->steps;
 	if (ecc->steps * ecc->size != mtd->writesize) {
-		WARN(1, "Invalid ECC parameters\n");
-		ret = -EINVAL;
-		goto err_nand_manuf_cleanup;
+		pr_warn("WARNING: %s: Invalid ECC parameters: steps %d, step size %d, page size %u\n",
+			mtd->name, ecc->steps, ecc->size, mtd->writesize);
 	}
 
 	if (!ecc->total) {

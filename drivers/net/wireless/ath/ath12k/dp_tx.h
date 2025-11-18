@@ -16,7 +16,7 @@ struct ath12k_dp_htt_wbm_tx_status {
 };
 
 int ath12k_dp_tx_htt_h2t_ver_req_msg(struct ath12k_base *ab);
-int ath12k_dp_tx(struct ath12k *ar, struct ath12k_link_vif *arvif,
+int ath12k_dp_tx(struct ath12k *ar, struct ath12k_link_vif *arvif, struct ath12k_sta *ahsta,
 		 struct sk_buff *skb, bool gsn_valid, int mcbc_gsn,
 		 bool is_mcast);
 void ath12k_dp_tx_completion_handler(struct ath12k_base *ab, int ring_id);

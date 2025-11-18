@@ -590,6 +590,7 @@ struct ath12k_sta {
 	enum ieee80211_sta_state state;
 
 	struct ath12k_reoq_buf reoq_bufs[IEEE80211_NUM_TIDS + 1];
+	u16 tcl_metadata;
 };
 
 #define ATH12K_HALF_20MHZ_BW	10

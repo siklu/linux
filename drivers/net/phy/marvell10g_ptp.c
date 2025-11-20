@@ -254,6 +254,7 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	priv->caps.n_per_out = 0;
 	priv->caps.n_pins = 0;
 	priv->caps.pps = 0;
+	priv->caps.supported_extts_flags = PTP_EXTTS_EDGES | PTP_STRICT_FLAGS;
 	priv->caps.pin_config = NULL;
 	priv->caps.adjfine = mv3310_adjfine;
 	priv->caps.adjphase = mv3310_adjphase;

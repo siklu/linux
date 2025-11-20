@@ -1,0 +1,101 @@
+/dts-v1/;
+/plugin/;
+
+&i2c0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	ltc4151@6a {
+		compatible = "lltc,ltc4151";
+		reg = <0x6a>;
+		shunt-resistor-micro-ohms = <20000>;
+	};
+};
+
+&cp0_i2c1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	
+    idtcm: i2c-idtcm-dpll@58 {
+		#clock-cells = <0>;
+        compatible = "idt,8a34001";
+        reg = <0x58>;
+    };
+};
+
+&cp0_eth0 {
+	siklu_port_name = "eth2";
+};
+
+&cp0_eth1 {
+	status = "disabled";
+};
+
+&cp1_eth0 {
+	siklu_port_name = "eth1";
+};
+
+&cp1_pinctrl {
+	cp1_mpp6_gpio: cp1-mpp6-gpio {
+		marvell,pins = "mpp6";
+		marvell,function = "gpio";
+	};
+
+	cp1_mpp6_ptp: cp1-mpp6-ptp {
+		marvell,pins = "mpp6";
+		marvell,function = "ptp";
+	};
+};
+
+&cp1_ethernet {
+	pinctrl-names = "default", "extts";
+	pinctrl-0 = <&cp1_mpp6_gpio>;
+	pinctrl-1 = <&cp1_mpp6_ptp>;
+};
+
+// not needed in falcon
+&cp1_mdio {
+	status = "disabled";
+};
+
+
+/*
+*  DEV-6442: Add initialization order to the falcon 3310 phy and modems
+*  By defining i2c-idtcm-dpll as a clock (#clock-cells = <0>;) we 
+*  can create dependency for this clock in the phy (cp0_xmdio) and 
+*  the pcies( modems) sections and thus to cause the i2c-idtcm-dpll 
+*  driver to be initialized before them. otherwise the dpll init can 
+*  cause issues to the modems and the 3310 phy
+*
+*  DEV-7615: Use depends-on to probe the pcies in order
+*/
+
+&cp0_xmdio {
+    assigned-clocks = <&idtcm 0>;
+    assigned-clock-parents = <&idtcm 0>;
+};
+
+&cp0_pcie0 {
+    assigned-clocks = <&idtcm 0>;
+    assigned-clock-parents = <&idtcm 0>;
+};
+
+&cp0_pcie1 {
+    assigned-clocks = <&idtcm 0>;
+    assigned-clock-parents = <&idtcm 0>;
+    depends-on = <&cp0_pcie0>;
+};
+
+
+&cp1_pcie0 {
+    assigned-clocks = <&idtcm 0>;
+    assigned-clock-parents = <&idtcm 0>;
+    depends-on = <&cp0_pcie1>;
+};
+
+
+&cp1_pcie1 {
+    assigned-clocks = <&idtcm 0>;
+    assigned-clock-parents = <&idtcm 0>;
+    depends-on = <&cp1_pcie0>;
+};

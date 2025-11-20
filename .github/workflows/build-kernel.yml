@@ -26,10 +26,15 @@ jobs:
           export ARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
 
-      - name: Build kernel with siklu_arm64_defconfig
+      - name: Copy siklu_arm64_defconfig to config
+        run: cp arch/arm64/configs/siklu_arm64_defconfig ./config
+
+      - name: Configure kernel (olddefconfig)
+        run: make ARCH=arm64 olddefconfig
+
+      - name: Build kernel with arm64 architecture
         run: |
-          make siklu_arm64_defconfig
-          make -j$(nproc)
+          make ARCH=arm64 -j$(nproc)
 
       - name: Archive kernel image
         uses: actions/upload-artifact@v4

@@ -63,14 +63,14 @@
 		interrupts = <17>;
 	};
 
-	soc {
+	AP_NAME {
 		#address-cells = <2>;
 		#size-cells = <2>;
 		compatible = "simple-bus";
 		interrupt-parent = <&gic>;
 		ranges;
 
-		bus@f0000000 {
+		config-space@f0000000 {
 			#address-cells = <1>;
 			#size-cells = <1>;
 			compatible = "simple-bus";

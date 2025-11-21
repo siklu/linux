@@ -30,6 +30,12 @@ jobs:
       - name: Configure kernel (olddefconfig)
         run: make ARCH=arm64 olddefconfig
 
+      - name: Log runner CPU info
+        run: |
+          echo "CPU core count: $(nproc)"
+          echo "Processor info:"
+          lscpu
+
       - name: Build kernel with arm64 architecture
         run: make ARCH=arm64 -j$(nproc)
       

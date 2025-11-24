@@ -83,7 +83,6 @@ static void ath12k_dp_tx_release_txbuf(struct ath12k_dp *dp,
 				       u8 pool_id)
 {
 	spin_lock_bh(&dp->tx_desc_lock[pool_id]);
-	tx_desc->skb_ext_desc = NULL;
 	list_move_tail(&tx_desc->list, &dp->tx_desc_free_list[pool_id]);
 	spin_unlock_bh(&dp->tx_desc_lock[pool_id]);
 }
@@ -462,7 +461,6 @@ skip_htt_meta:
 		ti.type = HAL_TCL_DESC_TYPE_EXT_DESC;
 
 		skb_cb->paddr_ext_desc = ti.paddr;
-		tx_desc->skb_ext_desc = skb_ext_desc;
 	}
 
 	hal_ring_id = tx_ring->tcl_data_ring.ring_id;
@@ -559,11 +557,9 @@ static void ath12k_dp_tx_free_txbuf(struct ath12k_base *ab,
 	ar = ab->pdevs[pdev_id].ar;
 
 	dma_unmap_single(ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
-	if (skb_cb->paddr_ext_desc) {
+	if (skb_cb->paddr_ext_desc)
 		dma_unmap_single(ab->dev, skb_cb->paddr_ext_desc,
-				 desc_params->skb_ext_desc->len, DMA_TO_DEVICE);
-		dev_kfree_skb_any(desc_params->skb_ext_desc);
-	}
+				 sizeof(struct hal_tx_msdu_ext_desc), DMA_TO_DEVICE);
 
 	ieee80211_free_txskb(ar->ah->hw, msdu);
 
@@ -599,11 +595,9 @@ ath12k_dp_tx_htt_tx_complete_buf(struct ath12k_base *ab,
 		wake_up(&ar->dp.tx_empty_waitq);
 
 	dma_unmap_single(ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
-	if (skb_cb->paddr_ext_desc) {
+	if (skb_cb->paddr_ext_desc)
 		dma_unmap_single(ab->dev, skb_cb->paddr_ext_desc,
-				 desc_params->skb_ext_desc->len, DMA_TO_DEVICE);
-		dev_kfree_skb_any(desc_params->skb_ext_desc);
-	}
+				 sizeof(struct hal_tx_msdu_ext_desc), DMA_TO_DEVICE);
 
 	vif = skb_cb->vif;
 	if (vif) {
@@ -853,11 +847,9 @@ static void ath12k_dp_tx_complete_msdu(struct ath12k *ar,
 	ab->device_stats.tx_completed[ring]++;
 
 	dma_unmap_single(ab->dev, skb_cb->paddr, msdu->len, DMA_TO_DEVICE);
-	if (skb_cb->paddr_ext_desc) {
+	if (skb_cb->paddr_ext_desc)
 		dma_unmap_single(ab->dev, skb_cb->paddr_ext_desc,
-				 desc_params->skb_ext_desc->len, DMA_TO_DEVICE);
-		dev_kfree_skb_any(desc_params->skb_ext_desc);
-	}
+				 sizeof(struct hal_tx_msdu_ext_desc), DMA_TO_DEVICE);
 
 	rcu_read_lock();
 
@@ -1073,7 +1065,6 @@ void ath12k_dp_tx_completion_handler(struct ath12k_base *ab, int ring_id)
 
 		desc_params.mac_id = tx_desc->mac_id;
 		desc_params.skb = tx_desc->skb;
-		desc_params.skb_ext_desc = tx_desc->skb_ext_desc;
 
 		/* Find the HAL_WBM_RELEASE_INFO0_REL_SRC_MODULE value */
 		buf_rel_source = le32_get_bits(tx_status->info0,

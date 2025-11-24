@@ -1993,7 +1993,6 @@ static void mvpp2_ethtool_get_strings(struct net_device *netdev, u32 sset,
 				      u8 *data)
 {
 	struct mvpp2_port *port = netdev_priv(netdev);
-	const char *str;
 	int i, q;
 
 	if (sset == ETH_SS_PRIV_FLAGS) {
@@ -2005,26 +2004,40 @@ static void mvpp2_ethtool_get_strings(struct net_device *netdev, u32 sset,
 	if (sset != ETH_SS_STATS)
 		return;
 
-	for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_mib_regs); i++)
-		ethtool_puts(&data, mvpp2_ethtool_mib_regs[i].string);
+	for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_mib_regs); i++) {
+		strscpy(data, mvpp2_ethtool_mib_regs[i].string,
+			ETH_GSTRING_LEN);
+		data += ETH_GSTRING_LEN;
+	}
 
-	for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_port_regs); i++)
-		ethtool_puts(&data, mvpp2_ethtool_port_regs[i].string);
+	for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_port_regs); i++) {
+		strscpy(data, mvpp2_ethtool_port_regs[i].string,
+			ETH_GSTRING_LEN);
+		data += ETH_GSTRING_LEN;
+	}
 
-	for (q = 0; q < port->ntxqs; q++)
+	for (q = 0; q < port->ntxqs; q++) {
 		for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_txq_regs); i++) {
-			str = mvpp2_ethtool_txq_regs[i].string;
-			ethtool_sprintf(&data, str, q);
+			snprintf(data, ETH_GSTRING_LEN,
+				 mvpp2_ethtool_txq_regs[i].string, q);
+			data += ETH_GSTRING_LEN;
 		}
+	}
 
-	for (q = 0; q < port->nrxqs; q++)
+	for (q = 0; q < port->nrxqs; q++) {
 		for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_rxq_regs); i++) {
-			str = mvpp2_ethtool_rxq_regs[i].string;
-			ethtool_sprintf(&data, str, q);
+			snprintf(data, ETH_GSTRING_LEN,
+				 mvpp2_ethtool_rxq_regs[i].string,
+				 q);
+			data += ETH_GSTRING_LEN;
 		}
+	}
 
-	for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_xdp); i++)
-		ethtool_puts(&data, mvpp2_ethtool_xdp[i].string);
+	for (i = 0; i < ARRAY_SIZE(mvpp2_ethtool_xdp); i++) {
+		strscpy(data, mvpp2_ethtool_xdp[i].string,
+			ETH_GSTRING_LEN);
+		data += ETH_GSTRING_LEN;
+	}
 }
 
 static void
@@ -5304,16 +5317,18 @@ static int mvpp2_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
 	struct mvpp2_port *port = netdev_priv(dev);
 
-	switch (cmd) {
-	case SIOCSHWTSTAMP:
-		if (port->hwtstamp)
-			return mvpp2_set_ts_config(port, ifr);
-		break;
+	if (!phy_has_hwtstamp(dev->phydev)) {
+		switch (cmd) {
+		case SIOCSHWTSTAMP:
+			if (port->hwtstamp)
+				return mvpp2_set_ts_config(port, ifr);
+			break;
 
-	case SIOCGHWTSTAMP:
-		if (port->hwtstamp)
-			return mvpp2_get_ts_config(port, ifr);
-		break;
+		case SIOCGHWTSTAMP:
+			if (port->hwtstamp)
+				return mvpp2_get_ts_config(port, ifr);
+			break;
+		}
 	}
 
 	if (!port->phylink)
@@ -5795,6 +5810,117 @@ static int mvpp2_ethtool_set_rxfh(struct net_device *dev,
 	return mvpp2_modify_rxfh_context(dev, NULL, rxfh, extack);
 }
 
+static u32 mvpp22_get_priv_flags(struct net_device *dev)
+{
+	struct mvpp2_port *port = netdev_priv(dev);
+	u32 priv_flags = 0;
+
+	if (port->flags & MVPP22_F_IF_MUSDK)
+		priv_flags |= MVPP22_F_IF_MUSDK_PRIV;
+	return priv_flags;
+}
+
+static int mvpp2_port_musdk_cfg(struct net_device *dev, bool ena)
+{
+	struct mvpp2_port_us_cfg {
+		unsigned int nqvecs;
+		unsigned int nrxqs;
+		unsigned int ntxqs;
+		int mtu;
+		bool rxhash_en;
+		u8 rss_en;
+	} *us;
+
+	struct mvpp2_port *port = netdev_priv(dev);
+
+	if (ena) {
+		/* Disable Queues and IntVec allocations for MUSDK,
+		 * but save original values.
+		 */
+		us = kzalloc(sizeof(*us), GFP_KERNEL);
+		if (!us)
+			return -ENOMEM;
+		port->us_cfg = (void *)us;
+		us->nqvecs = port->nqvecs;
+		us->nrxqs  = port->nrxqs;
+		us->ntxqs = port->ntxqs;
+		us->mtu = dev->mtu;
+		us->rxhash_en = !!(dev->hw_features & NETIF_F_RXHASH);
+
+		port->nqvecs = 0;
+		port->nrxqs  = 0;
+		port->ntxqs  = 0;
+		if (us->rxhash_en) {
+			dev->hw_features &= ~NETIF_F_RXHASH;
+			netdev_update_features(dev);
+		}
+	} else {
+		/* Back to Kernel mode */
+		us = port->us_cfg;
+		port->nqvecs = us->nqvecs;
+		port->nrxqs  = us->nrxqs;
+		port->ntxqs  = us->ntxqs;
+		if (us->rxhash_en) {
+			dev->hw_features |= NETIF_F_RXHASH;
+			netdev_update_features(dev);
+		}
+		kfree(us);
+		port->us_cfg = NULL;
+	}
+	return 0;
+}
+
+static int mvpp2_port_musdk_set(struct net_device *dev, bool ena)
+{
+	struct mvpp2_port *port = netdev_priv(dev);
+	bool running = netif_running(dev);
+	int err;
+
+	/* This procedure is called by ethtool change or by Module-remove.
+	 * For "remove" do anything only if we are in musdk-mode
+	 * and toggling back to Kernel-mode is really required.
+	 */
+	if (!ena && !port->us_cfg)
+		return 0;
+
+	if (running)
+		mvpp2_stop(dev);
+
+	if (ena) {
+		err = mvpp2_port_musdk_cfg(dev, ena);
+		port->flags |= MVPP22_F_IF_MUSDK;
+	} else {
+		err = mvpp2_port_musdk_cfg(dev, ena);
+		port->flags &= ~MVPP22_F_IF_MUSDK;
+	}
+
+	if (err) {
+		netdev_err(dev, "musdk set=%d: error=%d\n", ena, err);
+		if (err)
+			return err;
+		/* print Error message but continue */
+	}
+
+	if (running)
+		mvpp2_open(dev);
+
+	return 0;
+}
+
+static int mvpp22_set_priv_flags(struct net_device *dev, u32 priv_flags)
+{
+	struct mvpp2_port *port = netdev_priv(dev);
+	bool f_old, f_new;
+	int err = 0;
+
+	f_old = port->flags & MVPP22_F_IF_MUSDK;
+	f_new = priv_flags & MVPP22_F_IF_MUSDK_PRIV;
+	if (f_old != f_new)
+		err = mvpp2_port_musdk_set(dev, f_new);
+
+	return err;
+}
+
 /* Device ops */
 
 static const struct net_device_ops mvpp2_netdev_ops = {
@@ -5840,6 +5966,8 @@ static const struct ethtool_ops mvpp2_eth_tool_ops = {
 	.create_rxfh_context	= mvpp2_create_rxfh_context,
 	.modify_rxfh_context	= mvpp2_modify_rxfh_context,
 	.remove_rxfh_context	= mvpp2_remove_rxfh_context,
+	.get_priv_flags		= mvpp22_get_priv_flags,
+	.set_priv_flags		= mvpp22_set_priv_flags,
 };
 
 /* Used for PPv2.1, or PPv2.2 with the old Device Tree binding that
@@ -5969,6 +6097,13 @@ static void mvpp2_rx_irqs_setup(struct mvpp2_port *port)
 
 		val = qv->sw_thread_id;
 		val |= port->id << MVPP22_ISR_RXQ_GROUP_INDEX_GROUP_OFFSET;
+		mvpp2_write(priv, MVPP22_ISR_RXQ_GROUP_INDEX_REG, val);
+
+		val = qv->first_rxq;
+		val |= qv->nrxqs << MVPP22_ISR_RXQ_SUB_GROUP_SIZE_OFFSET;
+		mvpp2_write(priv, MVPP22_ISR_RXQ_SUB_GROUP_CONFIG_REG, val);
+	}
+}
 
 /* Initialize port HW */
 static int mvpp2_port_init(struct mvpp2_port *port)
@@ -7796,7 +7931,7 @@ MODULE_DEVICE_TABLE(acpi, mvpp2_acpi_match);
 
 static struct platform_driver mvpp2_driver = {
 	.probe = mvpp2_probe,
-	.remove = mvpp2_remove,
+	.remove_new = mvpp2_remove,
 	.driver = {
 		.name = MVPP2_DRIVER_NAME,
 		.of_match_table = mvpp2_match,

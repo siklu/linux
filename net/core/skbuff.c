@@ -1159,10 +1159,31 @@ static void skb_release_all(struct sk_buff *skb, enum skb_drop_reason reason)
  *	Clean the state. This is an internal helper function. Users should
  *	always call kfree_skb
  */
+#include <linux/timer.h>
+#include <linux/jiffies.h>
+
+static bool enable_warn = false;
+static struct timer_list warn_timer;
+
+static void enable_warn_fn(struct timer_list *t)
+{
+    enable_warn = true;
+    pr_info("DEBUG: skb WARN enabled for wlP2p1s0\n");
+}
+
+static int __init warn_init(void)
+{
+    /* Fire after 5 minutes */
+    timer_setup(&warn_timer, enable_warn_fn, 0);
+    mod_timer(&warn_timer, jiffies + msecs_to_jiffies(5 * 60 * 1000));
+    return 0;
+}
+
+late_initcall(warn_init);   /* Runs after boot, safe for drivers */
 
 void __kfree_skb(struct sk_buff *skb)
 {
-	if (skb->dev && strcmp(skb->dev->name, "wlP2p1s0") == 0) {
+	if (enable_warn && skb->dev && strcmp(skb->dev->name, "wlP2p1s0") == 0) {
 		WARN(1, "skb=%p", skb);
 	}
 	skb_release_all(skb, SKB_DROP_REASON_NOT_SPECIFIED);

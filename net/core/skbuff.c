@@ -1162,6 +1162,9 @@ static void skb_release_all(struct sk_buff *skb, enum skb_drop_reason reason)
 
 void __kfree_skb(struct sk_buff *skb)
 {
+	if (skb->dev && strcmp(skb->dev->name, "wlP2p1s0") == 0) {
+		WARN(1, "skb=%p", skb);
+	}
 	skb_release_all(skb, SKB_DROP_REASON_NOT_SPECIFIED);
 	kfree_skbmem(skb);
 }

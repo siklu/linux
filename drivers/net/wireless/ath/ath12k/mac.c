@@ -4854,7 +4854,7 @@ static int ath12k_mac_station_add(struct ath12k *ar,
 	   FORCE WDS / 4-ADDRESS MODE
 	   ----------------------------- */
 	// if (ieee80211_vif_is_mesh(vif)) {
-		ret = ath12k_wmi_set_peer_param(ar, arsta->addr,
+		ret = ath12k_wmi_set_peer_param(ar, sta->addr,
 						arvif->vdev_id,
 						WMI_PEER_USE_4ADDR, 1);
 		if (ret) {

@@ -810,11 +810,8 @@ static int __xsk_generic_xmit(struct sock *sk)
 		 * if there is space in it. This avoids having to implement
 		 * any buffering in the Tx path.
 		 */
-		err = xsk_cq_reserve_addr_locked(xs->pool, desc.addr);
-		if (err) {
-			err = -EAGAIN;
+		if (xsk_cq_reserve_addr_locked(xs->pool, desc.addr))
 			goto out;
-		}
 
 		skb = xsk_build_skb(xs, &desc);
 		if (IS_ERR(skb)) {

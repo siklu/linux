@@ -37,7 +37,7 @@ jobs:
           lscpu
 
       - name: Build kernel with arm64 architecture
-        run: make -j
+        run: make -j$(nproc)
       
       - name: Archive kernel image
         uses: actions/upload-artifact@v4

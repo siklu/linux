@@ -16,39 +16,48 @@ jobs:
         ARCH: arm64
         CROSS_COMPILE: aarch64-linux-gnu-
       steps:
-      - name: Cache build dependencies and kernel outputs
-        uses: actions/cache@v4
-        with:
-          path: |
-            arch/arm64/boot/Image
-            .config
-            vmlinux
-            Module.symvers
-            modules.order
-            arch/arm64/boot/dts
-            drivers
-            include
-            scripts
-          key: ${{ runner.os }}-kernel-${{ github.ref }}-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-kernel-${{ github.ref }}-
-            ${{ runner.os }}-kernel-
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Log runner CPU info
+        run: |
+          echo "CPU core count: $(nproc)"
+          echo "Processor info:"
+          lscpu
 
       - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential bc flex bison libssl-dev libncurses-dev crossbuild-essential-arm64 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
 
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Configure kernel (siklu_arm64_defconfig )
         run: make ARCH=arm64 siklu_arm64_defconfig 
-
-      - name: Log runner CPU info
-        run: |
-          echo "CPU core count: $(nproc)"
-          echo "Processor info:"
-          lscpu
+      
+      - name: Cache build dependencies and kernel outputs
+        uses: actions/cache@v4
+        with:
+      # --- Optimized Cache Path: Targeting ALL generated, costly artifacts ---
+            path: |
+              .config                             # The configuration file (Input to the build system)
+              vmlinux                             # The final, linked kernel binary (ELF)
+              arch/arm64/boot/Image               # The final compressed kernel image
+              Module.symvers                      # Essential global symbol metadata
+              modules.order                       # Module load order definition
+              vmlinux.o                           # Crucial intermediate linker object file
+              **/*.ko                             # All compiled kernel modules (Kernel Objects)
+              **/*.o                              # All intermediate object files (core incremental build acceleration)
+              **/*.cmd                            # Kbuild command tracking files (for dependency checking)
+              **/*.d                              # Kbuild dependency files
+              **/*.lds                            # Linker script outputs (e.g., vmlinux.lds)
+              **/*.s                              # Generated assembly files
+              **/*.dtb                            # Generated Device Tree Blobs (if compiled in-tree)
+              include/generated/utsrelease.h      # Generated version header
+              include/generated/compile.h         # Generated compile header
+              
+            # --- Integrity Cache Key: Ensures cache is reused only if core inputs are identical ---
+            key: ${{ runner.os }}-kernel-${{ hashFiles('.config', 'arch/arm64/Makefile') }}
+            restore-keys: |
+              ${{ runner.os }}-kernel-
 
       - name: Build kernel with arm64 architecture
         run: make -j$(nproc)

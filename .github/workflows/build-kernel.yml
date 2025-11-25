@@ -16,6 +16,23 @@ jobs:
         ARCH: arm64
         CROSS_COMPILE: aarch64-linux-gnu-
       steps:
+      - name: Cache build dependencies and kernel outputs
+        uses: actions/cache@v4
+        with:
+          path: |
+            arch/arm64/boot/Image
+            .config
+            vmlinux
+            Module.symvers
+            modules.order
+            arch/arm64/boot/dts
+            drivers
+            include
+            scripts
+          key: ${{ runner.os }}-kernel-${{ github.ref }}-${{ github.sha }}
+          restore-keys: |
+            ${{ runner.os }}-kernel-${{ github.ref }}-
+            ${{ runner.os }}-kernel-
       - name: Checkout repository
         uses: actions/checkout@v4
 

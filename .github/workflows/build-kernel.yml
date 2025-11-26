@@ -38,21 +38,21 @@ jobs:
         with:
       # --- Optimized Cache Path: Targeting ALL generated, costly artifacts ---
             path: |
-              .config                             # The configuration file (Input to the build system)
-              vmlinux                             # The final, linked kernel binary (ELF)
-              arch/arm64/boot/Image               # The final compressed kernel image
-              Module.symvers                      # Essential global symbol metadata
-              modules.order                       # Module load order definition
-              vmlinux.o                           # Crucial intermediate linker object file
-              **/*.ko                             # All compiled kernel modules (Kernel Objects)
-              **/*.o                              # All intermediate object files (core incremental build acceleration)
-              **/*.cmd                            # Kbuild command tracking files (for dependency checking)
-              **/*.d                              # Kbuild dependency files
-              **/*.lds                            # Linker script outputs (e.g., vmlinux.lds)
-              **/*.s                              # Generated assembly files
-              **/*.dtb                            # Generated Device Tree Blobs (if compiled in-tree)
-              include/generated/utsrelease.h      # Generated version header
-              include/generated/compile.h         # Generated compile header
+              .config                
+              vmlinux       
+              arch/arm64/boot/Image     
+              Module.symvers         
+              modules.order        
+              vmlinux.o                
+              **/*.ko               
+              **/*.o              
+              **/*.cmd                 
+              **/*.d                
+              **/*.lds                
+              **/*.s                
+              **/*.dtb                   
+              include/generated/utsrelease.h
+              include/generated/compile.h
               
             # --- Integrity Cache Key: Ensures cache is reused only if core inputs are identical ---
             key: ${{ runner.os }}-kernel-${{ hashFiles('.config', 'arch/arm64/Makefile') }}

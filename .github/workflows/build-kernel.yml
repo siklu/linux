@@ -1,0 +1,69 @@
+name: Build Linux Kernel (siklu_arm64_defconfig)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - tg-v6.12
+  pull_request:
+    branches:
+      - tg-v6.12
+
+jobs:
+  build:
+      runs-on: ubuntu-latest
+      env:
+        ARCH: arm64
+        CROSS_COMPILE: aarch64-linux-gnu-
+      steps:
+      - name: Log runner CPU info
+        run: |
+          echo "CPU core count: $(nproc)"
+          echo "Processor info:"
+          lscpu
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential bc flex bison libssl-dev libncurses-dev crossbuild-essential-arm64 gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure kernel (siklu_arm64_defconfig )
+        run: make ARCH=arm64 siklu_arm64_defconfig 
+      
+      - name: Cache build dependencies and kernel outputs
+        uses: actions/cache@v4
+        with:
+      # --- Optimized Cache Path: Targeting ALL generated, costly artifacts ---
+            path: |
+              .config                
+              vmlinux       
+              arch/arm64/boot/Image     
+              Module.symvers         
+              modules.order        
+              vmlinux.o                
+              **/*.ko               
+              **/*.o              
+              **/*.cmd                 
+              **/*.d                
+              **/*.lds                
+              **/*.s                
+              **/*.dtb                   
+              include/generated/utsrelease.h
+              include/generated/compile.h
+              
+            # --- Integrity Cache Key: Ensures cache is reused only if core inputs are identical ---
+            key: ${{ runner.os }}-kernel-${{ hashFiles('.config', 'arch/arm64/Makefile') }}
+            restore-keys: |
+              ${{ runner.os }}-kernel-
+
+      - name: Build kernel with arm64 architecture
+        run: make -j$(nproc)
+      
+      - name: Archive kernel image
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-image
+          path: arch/arm64/boot/Image

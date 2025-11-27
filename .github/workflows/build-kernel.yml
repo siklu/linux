@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - tg-v6.12
+      - tg-v6.18-rc4
   pull_request:
     branches:
-      - tg-v6.12
+      - tg-v6.18-rc4
 
 jobs:
   build:

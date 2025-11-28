@@ -246,6 +246,18 @@ static int idt82p33_extts_enable(struct idt82p33_channel *channel,
 	idt82p33  = channel->idt82p33;
 	old_mask = idt82p33->extts_mask;
 
+	/* Reject requests with unsupported flags */
+	if (rq->extts.flags & ~(PTP_ENABLE_FEATURE |
+				PTP_RISING_EDGE |
+				PTP_FALLING_EDGE |
+				PTP_STRICT_FLAGS))
+		return -EOPNOTSUPP;
+
+	/* Reject requests to enable time stamping on falling edge */
+	if ((rq->extts.flags & PTP_ENABLE_FEATURE) &&
+	    (rq->extts.flags & PTP_FALLING_EDGE))
+		return -EOPNOTSUPP;
+
 	if (index >= MAX_PHC_PLL)
 		return -EINVAL;
 
@@ -966,23 +978,24 @@ static int idt82p33_enable(struct ptp_clock_info *ptp,
 	return err;
 }
 
-static s32 idt82p33_getmaxphase(__always_unused struct ptp_clock_info *ptp)
-{
-	return WRITE_PHASE_OFFSET_LIMIT;
-}
-
 static int idt82p33_adjwritephase(struct ptp_clock_info *ptp, s32 offset_ns)
 {
 	struct idt82p33_channel *channel =
 		container_of(ptp, struct idt82p33_channel, caps);
 	struct idt82p33 *idt82p33 = channel->idt82p33;
-	s64 offset_regval;
+	s64 offset_regval, offset_fs;
 	u8 val[4] = {0};
 	int err;
 
+	offset_fs = (s64)(-offset_ns) * 1000000;
+
+	if (offset_fs > WRITE_PHASE_OFFSET_LIMIT)
+		offset_fs = WRITE_PHASE_OFFSET_LIMIT;
+	else if (offset_fs < -WRITE_PHASE_OFFSET_LIMIT)
+		offset_fs = -WRITE_PHASE_OFFSET_LIMIT;
+
 	/* Convert from phaseoffset_fs to register value */
-	offset_regval = div_s64((s64)(-offset_ns) * 1000000000ll,
-				IDT_T0DPLL_PHASE_RESOL);
+	offset_regval = div_s64(offset_fs * 1000, IDT_T0DPLL_PHASE_RESOL);
 
 	val[0] = offset_regval & 0xFF;
 	val[1] = (offset_regval >> 8) & 0xFF;
@@ -1159,10 +1172,9 @@ static void idt82p33_caps_init(u32 index, struct ptp_clock_info *caps,
 	caps->owner = THIS_MODULE;
 	caps->max_adj = DCO_MAX_PPB;
 	caps->n_per_out = MAX_PER_OUT;
-	caps->n_ext_ts = MAX_PHC_PLL;
-	caps->n_pins = max_pins;
-	caps->adjphase = idt82p33_adjwritephase;
-	caps->getmaxphase = idt82p33_getmaxphase;
+	caps->n_ext_ts = MAX_PHC_PLL,
+	caps->n_pins = max_pins,
+	caps->adjphase = idt82p33_adjwritephase,
 	caps->adjfine = idt82p33_adjfine;
 	caps->adjtime = idt82p33_adjtime;
 	caps->gettime64 = idt82p33_gettime;
@@ -1174,9 +1186,6 @@ static void idt82p33_caps_init(u32 index, struct ptp_clock_info *caps,
 	snprintf(caps->name, sizeof(caps->name), "IDT 82P33 PLL%u", index);
 
 	caps->pin_config = pin_cfg;
-
-	caps->supported_extts_flags = PTP_RISING_EDGE |
-				      PTP_STRICT_FLAGS;
 
 	for (i = 0; i < max_pins; ++i) {
 		ppd = &pin_cfg[i];

@@ -308,7 +308,7 @@
 			status = "disabled";
 		};
 
-		spi_0: spi@78b5000 {
+		blsp1_spi1: spi@78b5000 {
 			compatible = "qcom,spi-qup-v2.2.1";
 			#address-cells = <1>;
 			#size-cells = <0>;
@@ -323,7 +323,7 @@
 			status = "disabled";
 		};
 
-		spi_1: spi@78b6000 {
+		blsp1_spi2: spi@78b6000 {
 			compatible = "qcom,spi-qup-v2.2.1";
 			#address-cells = <1>;
 			#size-cells = <0>;

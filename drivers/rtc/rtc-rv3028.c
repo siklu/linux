@@ -893,8 +893,6 @@ static u8 rv3028_set_bsm(struct rv3028_data *rv3028,
 		dev_warn(&client->dev, "set bsm_mode: rewrite eeprom(mode=%d)");
 		ret = rv3028_update_cfg(rv3028, RV3028_BACKUP,
 						RV3028_BACKUP_BSM, val);
-		if (ret)
-			return ret;
 	}
 	return ret;
 }

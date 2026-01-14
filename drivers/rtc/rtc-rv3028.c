@@ -876,6 +876,27 @@ static const struct regmap_config regmap_config = {
         .max_register = 0x37,
 };
 
+static u8 rv3028_set_bsm(struct rv3028_data *rv3028,
+				     struct i2c_client *client, uint8_t bsm_mode)
+{
+	int ret, val_old, val;
+	
+	ret = regmap_read(rv3028->regmap, RV3028_BACKUP, &val_old);
+	if (ret < 0)
+		return ret;
+	/* mask out only BSM bits */
+	val_old = val_old & RV3028_BACKUP_BSM;
+	val = FIELD_PREP(RV3028_BACKUP_BSM, bsm_mode);
+
+	/* only update EEPROM if changes are necessary */
+	if (val_old != val) {
+		dev_warn(&client->dev, "set bsm_mode: rewrite eeprom(mode=%d)");
+		ret = rv3028_update_cfg(rv3028, RV3028_BACKUP,
+						RV3028_BACKUP_BSM, val);
+	}
+	return ret;
+}
+
 static u8 rv3028_set_trickle_charger(struct rv3028_data *rv3028,
 				     struct i2c_client *client)
 {
@@ -938,6 +959,7 @@ static int rv3028_probe(struct i2c_client *client)
 {
 	struct rv3028_data *rv3028;
 	int ret, status;
+	u32 bsm_mode = 0;
 	struct nvmem_config nvmem_cfg = {
 		.name = "rv3028_nvram",
 		.word_size = 1,
@@ -1018,6 +1040,21 @@ static int rv3028_probe(struct i2c_client *client)
 	ret = rv3028_set_trickle_charger(rv3028, client);
 	if (ret)
 		return ret;
+	
+	// check bsm-mode in device-tree
+	if(device_property_present(&client->dev, "bsm-mode")){
+		dev_warn(&rv3028->rtc->dev, "bsm-mode property detected");
+		if(!device_property_read_u32(&client->dev, "bsm-mode", &bsm_mode)){
+			dev_info(&rv3028->rtc->dev, "bsm_mode = 0x%x", bsm_mode);
+			if((bsm_mode>RV3028_BACKUP_BSM_LSM)||(bsm_mode == 2)){
+				dev_err(&rv3028->rtc->dev, "bsm_mode is not valid, use BSM(0x1) or LSM(0x3)!");	
+			}else{
+				rv3028_set_bsm(rv3028, client, (u8)bsm_mode);
+			}
+		}else{
+			dev_err(&rv3028->rtc->dev, "rtc cannot read bsm mode");
+		}
+	}
 
 	ret = rtc_add_group(rv3028->rtc, &rv3028_attr_group);
 	if (ret)

@@ -32,6 +32,10 @@ properties:
       - 9000
       - 15000
 
+  bsm-mode:
+    0x01 (for DSM)
+    0x03 (for LSM)
+
 required:
   - compatible
   - reg

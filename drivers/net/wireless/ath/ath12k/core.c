@@ -34,6 +34,10 @@ module_param_named(ftm_mode, ath12k_ftm_mode, bool, 0444);
 MODULE_PARM_DESC(ftm_mode, "Boots up in factory test mode");
 EXPORT_SYMBOL(ath12k_ftm_mode);
 
+bool ath12k_split_phy_mode;
+module_param_named(split_phy_mode, ath12k_split_phy_mode, bool, 0444);
+MODULE_PARM_DESC(split_phy_mode, "Enable split PHY mode (disable MLO, expose each radio as separate wiphy)");
+
 /* protected with ath12k_hw_group_mutex */
 static struct list_head ath12k_hw_group_list = LIST_HEAD_INIT(ath12k_hw_group_list);
 
@@ -2165,6 +2169,14 @@ void ath12k_core_hw_group_set_mlo_capable(struct ath12k_hw_group *ag)
 
 	if (ath12k_ftm_mode)
 		return;
+
+	if (ath12k_split_phy_mode) {
+		ag->mlo_capable = false;
+		ab = ag->ab[0];
+		if (ab)
+			ath12k_info(ab, "split PHY mode enabled: MLO disabled, each radio exposed as separate wiphy\n");
+		return;
+	}
 
 	lockdep_assert_held(&ag->mutex);
 

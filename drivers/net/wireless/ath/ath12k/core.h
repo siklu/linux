@@ -1430,4 +1430,8 @@ static inline struct ath12k *ath12k_pdev_dp_to_ar(struct ath12k_pdev_dp *dp)
 {
 	return container_of(dp, struct ath12k, dp);
 }
+
+/* Module parameters */
+extern bool ath12k_split_phy_mode;
+
 #endif /* _CORE_H_ */

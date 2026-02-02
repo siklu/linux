@@ -518,7 +518,7 @@ int ath12k_core_fetch_board_data_api_1(struct ath12k_base *ab,
 int ath12k_core_fetch_bdf(struct ath12k_base *ab, struct ath12k_board_data *bd)
 {
 	char boardname[BOARD_NAME_SIZE], fallback_boardname[BOARD_NAME_SIZE];
-	char *filename, filepath[100];
+	char *filename, default_filename[100], filepath[100];
 	int bd_api;
 	int ret;
 
@@ -553,7 +553,19 @@ int ath12k_core_fetch_bdf(struct ath12k_base *ab, struct ath12k_board_data *bd)
 		goto success;
 
 	bd_api = 1;
-	ret = ath12k_core_fetch_board_data_api_1(ab, bd, ATH12K_DEFAULT_BOARD_FILE);
+
+	if (of_machine_is_compatible("siklu,n366")) {
+		strscpy(default_filename, "board-n366.bin",
+			sizeof(default_filename));
+	} else if (of_machine_is_compatible("siklu,ipq6018-ctu")) {
+		strscpy(default_filename, "board-fr2.bin",
+			sizeof(default_filename));
+	} else {
+		strscpy(default_filename, ATH12K_DEFAULT_BOARD_FILE,
+			sizeof(default_filename));
+	}
+
+	ret = ath12k_core_fetch_board_data_api_1(ab, bd, default_filename);
 	if (ret) {
 		ath12k_core_create_firmware_path(ab, filename,
 						 filepath, sizeof(filepath));
@@ -563,7 +575,7 @@ int ath12k_core_fetch_bdf(struct ath12k_base *ab, struct ath12k_board_data *bd)
 			ath12k_err(ab, "failed to fetch board data for %s from %s\n",
 				   fallback_boardname, filepath);
 
-		ath12k_err(ab, "failed to fetch board.bin from %s\n",
+		ath12k_err(ab, "failed to fetch %s from %s\n", default_filename,
 			   ab->hw_params->fw.dir);
 		return ret;
 	}

@@ -582,6 +582,7 @@ int ath12k_core_fetch_bdf(struct ath12k_base *ab, struct ath12k_board_data *bd)
 
 success:
 	ath12k_dbg(ab, ATH12K_DBG_BOOT, "using board api %d\n", bd_api);
+	ath12k_info(ab, "using board firmware %s\n", default_filename);
 	return 0;
 }
 

@@ -38,6 +38,15 @@ bool ath12k_split_phy_mode;
 module_param_named(split_phy_mode, ath12k_split_phy_mode, bool, 0444);
 MODULE_PARM_DESC(split_phy_mode, "Enable split PHY mode (disable MLO, expose each radio as separate wiphy)");
 
+/*
+ * Force dual-mac firmware loading regardless of OTP board ID.
+ * Required for some boards (like 8devices Noni) where the OTP doesn't
+ * have the dual-mac bit set but the hardware supports dual-radio operation.
+ */
+bool ath12k_force_dualmac;
+module_param_named(force_dualmac, ath12k_force_dualmac, bool, 0444);
+MODULE_PARM_DESC(force_dualmac, "Force loading dual-mac firmware (required for some dual-radio boards)");
+
 /* protected with ath12k_hw_group_mutex */
 static struct list_head ath12k_hw_group_list = LIST_HEAD_INIT(ath12k_hw_group_list);
 

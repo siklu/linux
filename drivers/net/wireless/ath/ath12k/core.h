@@ -525,6 +525,7 @@ struct ath12k_sta {
 	u8 num_peer;
 
 	enum ieee80211_sta_state state;
+	u16 tcl_metadata;
 };
 
 #define ATH12K_HALF_20MHZ_BW	10

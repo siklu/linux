@@ -527,6 +527,7 @@ struct ath12k_sta {
 	u16 free_logical_link_idx_map;
 
 	enum ieee80211_sta_state state;
+	u16 tcl_metadata;
 };
 
 #define ATH12K_HALF_20MHZ_BW	10

@@ -216,6 +216,13 @@ int ath12k_peer_create(struct ath12k *ar, struct ath12k_link_vif *arvif,
 
 	if (sta) {
 		ahsta = ath12k_sta_to_ahsta(sta);
+		ahsta->tcl_metadata |= u32_encode_bits(0, HTT_TCL_META_DATA_TYPE) |
+				       u32_encode_bits(peer->peer_id,
+						  HTT_TCL_META_DATA_PEER_ID);
+
+		/* set HTT extension valid bit to 0 by default */
+		ahsta->tcl_metadata &= ~HTT_TCL_META_DATA_VALID_HTT;
+
 		arsta = wiphy_dereference(ath12k_ar_to_hw(ar)->wiphy,
 					  ahsta->link[link_id]);
 

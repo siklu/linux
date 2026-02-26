@@ -59,7 +59,7 @@ static int ath12k_wifi7_dp_prepare_htt_metadata(struct sk_buff *skb)
 
 /* TODO: Remove the export once this file is built with wifi7 ko */
 int ath12k_wifi7_dp_tx(struct ath12k_pdev_dp *dp_pdev, struct ath12k_link_vif *arvif,
-		       struct sk_buff *skb, bool gsn_valid, int mcbc_gsn,
+		       struct ath12k_sta *ahsta, struct sk_buff *skb, bool gsn_valid, int mcbc_gsn,
 		       bool is_mcast)
 {
 	struct ath12k_dp *dp = dp_pdev->dp;
@@ -123,7 +123,14 @@ tcl_ring_sel:
 	dp_link_vif = ath12k_dp_vif_to_dp_link_vif(&ahvif->dp_vif, arvif->link_id);
 
 	ti.bank_id = dp_link_vif->bank_id;
-	ti.meta_data_flags = dp_link_vif->tcl_metadata;
+
+	if (ieee80211_has_a4(hdr->frame_control) &&
+	    is_multicast_ether_addr(hdr->addr3) && ahsta) {
+		ti.meta_data_flags = ahsta->tcl_metadata;
+		ti.flags0 |= u32_encode_bits(1, HAL_TCL_DATA_CMD_INFO2_TO_FW);
+	} else {
+		ti.meta_data_flags = dp_link_vif->tcl_metadata;
+	}
 
 	if (dp_vif->tx_encap_type == HAL_TCL_ENCAP_TYPE_RAW &&
 	    test_bit(ATH12K_FLAG_HW_CRYPTO_DISABLED, &ab->dev_flags)) {

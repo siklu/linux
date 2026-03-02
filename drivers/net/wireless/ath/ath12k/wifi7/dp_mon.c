@@ -1704,7 +1704,7 @@ ath12k_wifi7_dp_mon_rx_parse_status_tlv(struct ath12k_pdev_dp *dp_pdev,
 		 */
 		ppdu_info->rssi_comb =
 			u32_get_bits(info[2],
-				     HAL_RX_RSSI_LEGACY_INFO_INFO2_RSSI_COMB);
+				     HAL_RX_RSSI_LEGACY_INFO_INFO2_RSSI_COMB_PPDU);
 
 		ppdu_info->bw = u32_get_bits(info[0],
 					     HAL_RX_RSSI_LEGACY_INFO_INFO0_RX_BW);

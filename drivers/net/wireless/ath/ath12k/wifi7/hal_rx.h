@@ -272,9 +272,11 @@ enum hal_rx_ul_reception_type {
 
 struct hal_rx_phyrx_rssi_legacy_info {
 	__le32 info0;
-	__le32 rsvd0[39];
+	__le32 rsvd0[4];
 	__le32 info1;
+	__le32 rsvd1[34];
 	__le32 info2;
+	__le32 rsvd2;
 } __packed;
 
 #define HAL_RX_MPDU_START_INFO0_PPDU_ID			GENMASK(31, 16)

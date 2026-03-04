@@ -65,7 +65,6 @@ void ath12k_wifi7_hal_tx_cmd_desc_setup(struct ath12k_base *ab,
 					  HAL_TCL_DATA_CMD_INFO4_CACHE_SET_NUM);
 	tcl_cmd->info5 = 0;
 }
-EXPORT_SYMBOL(ath12k_wifi7_hal_tx_cmd_desc_setup);
 
 void ath12k_wifi7_hal_tx_set_dscp_tid_map(struct ath12k_base *ab, int id)
 {

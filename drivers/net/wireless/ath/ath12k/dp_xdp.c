@@ -34,9 +34,6 @@
 #include "hal.h"
 #include "debug.h"
 #include "wifi7/hal_desc.h"
-#include "wifi7/hal_tx.h"
-#include "wifi7/dp_rx.h"
-#include "wifi7/dp_tx.h"
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -493,26 +490,38 @@ static int ath12k_xdp_tx_zc(struct ath12k_xdp *xdp_ctx)
 		tx_desc->skb_ext_desc = NULL;
 		tx_desc->mac_id = 0;
 
-		/* Build TCL descriptor for Ethernet-encapsulated frame */
-		{
-			struct hal_tx_info ti = {};
-
-			ti.paddr = dma;
-			ti.data_len = desc.len;
-			ti.desc_id = tx_desc->desc_id;
-			ti.type = HAL_TCL_DESC_TYPE_BUFFER;
-			ti.bank_id = xdp_ctx->tx_bank_id;
-			ti.encap_type = HAL_TCL_ENCAP_TYPE_ETHERNET;
-			ti.encrypt_type = HAL_ENCRYPT_TYPE_OPEN;
-			ti.vdev_id = xdp_ctx->tx_vdev_id;
-			ti.lmac_id = xdp_ctx->tx_lmac_id;
-			ti.tid = 0; /* best effort */
-			ti.ring_id = ring_id;
-			ti.rbm_id = hal->tcl_to_wbm_rbm_map[ring_id].rbm_id;
-			ti.flags1 |= u32_encode_bits(1, HAL_TCL_DATA_CMD_INFO3_TID_OVERWRITE);
-
-			ath12k_wifi7_hal_tx_cmd_desc_setup(ab, tcl_desc, &ti);
-		}
+		/* Build TCL descriptor for Ethernet-encapsulated frame.
+		 * Inlined here to avoid a cross-module call into
+		 * ath12k_wifi7 which would create a circular module
+		 * dependency (ath12k <-> ath12k_wifi7).
+		 */
+		tcl_desc->buf_addr_info.info0 =
+			le32_encode_bits(dma, BUFFER_ADDR_INFO0_ADDR);
+		tcl_desc->buf_addr_info.info1 =
+			le32_encode_bits(((u64)dma >> HAL_ADDR_MSB_REG_SHIFT),
+					 BUFFER_ADDR_INFO1_ADDR) |
+			le32_encode_bits(hal->tcl_to_wbm_rbm_map[ring_id].rbm_id,
+					 BUFFER_ADDR_INFO1_RET_BUF_MGR) |
+			le32_encode_bits(tx_desc->desc_id,
+					 BUFFER_ADDR_INFO1_SW_COOKIE);
+		tcl_desc->info0 =
+			le32_encode_bits(HAL_TCL_DESC_TYPE_BUFFER,
+					 HAL_TCL_DATA_CMD_INFO0_DESC_TYPE) |
+			le32_encode_bits(xdp_ctx->tx_bank_id,
+					 HAL_TCL_DATA_CMD_INFO0_BANK_ID);
+		tcl_desc->info1 = 0;
+		tcl_desc->info2 =
+			le32_encode_bits(desc.len,
+					 HAL_TCL_DATA_CMD_INFO2_DATA_LEN);
+		tcl_desc->info3 =
+			le32_encode_bits(1, HAL_TCL_DATA_CMD_INFO3_TID_OVERWRITE) |
+			le32_encode_bits(0, HAL_TCL_DATA_CMD_INFO3_TID) |
+			le32_encode_bits(xdp_ctx->tx_lmac_id,
+					 HAL_TCL_DATA_CMD_INFO3_PMAC_ID) |
+			le32_encode_bits(xdp_ctx->tx_vdev_id,
+					 HAL_TCL_DATA_CMD_INFO3_VDEV_ID);
+		tcl_desc->info4 = 0;
+		tcl_desc->info5 = 0;
 
 		xsk_tx_release(pool);
 		submitted++;

@@ -23,6 +23,7 @@
 #include "wow.h"
 #include "dp_cmn.h"
 #include "peer.h"
+#include "dp_xdp.h"
 
 unsigned int ath12k_debug_mask;
 module_param_named(debug_mask, ath12k_debug_mask, uint, 0644);
@@ -716,6 +717,7 @@ static void ath12k_core_stop(struct ath12k_base *ab)
 	ath12k_dp_rx_pdev_reo_cleanup(ab);
 	ath12k_hif_stop(ab);
 	ath12k_wmi_detach(ab);
+	ath12k_xdp_destroy(ab);
 	ath12k_dp_cmn_device_deinit(ath12k_ab_to_dp(ab));
 
 	/* De-Init of components as needed */
@@ -1304,6 +1306,12 @@ int ath12k_core_qmi_firmware_ready(struct ath12k_base *ab)
 		goto err_firmware_stop;
 	}
 
+	ret = ath12k_xdp_create(ab);
+	if (ret) {
+		ath12k_warn(ab, "failed to create XDP interface: %d\n", ret);
+		/* Non-fatal: continue without XDP support */
+	}
+
 	mutex_lock(&ag->mutex);
 	mutex_lock(&ab->core_lock);
 
@@ -1344,6 +1352,7 @@ err_core_stop:
 	goto exit;
 
 err_deinit:
+	ath12k_xdp_destroy(ab);
 	ath12k_dp_cmn_device_deinit(ath12k_ab_to_dp(ab));
 	mutex_unlock(&ab->core_lock);
 	mutex_unlock(&ag->mutex);

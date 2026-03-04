@@ -60,3 +60,16 @@ config ATH12K_COREDUMP
 
 	  If unsure, say Y to make it easier to debug problems. But if
 	  dump collection not required choose N.
+
+config ATH12K_XDP
+	bool "ath12k AF_XDP zero-copy support"
+	depends on ATH12K && XDP_SOCKETS
+	help
+	  Enable AF_XDP zero-copy support for ath12k.  When enabled, a
+	  dedicated network interface (ath12kxdp0) is created that
+	  supports XDP programs and AF_XDP zero-copy sockets.
+
+	  This is useful for high-performance packet processing with
+	  frameworks like VPP that use AF_XDP.
+
+	  If unsure, say N.

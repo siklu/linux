@@ -7,6 +7,7 @@
 #include "../core.h"
 #include "../debug.h"
 #include "../dp_tx.h"
+#include "../dp_xdp.h"
 #include "../peer.h"
 #include "dp_tx.h"
 #include "hal_desc.h"
@@ -910,6 +911,15 @@ void ath12k_wifi7_dp_tx_completion_handler(struct ath12k_dp *dp, int ring_id)
 		 * to reduce contention
 		 */
 		ath12k_dp_tx_release_txbuf(dp, tx_desc, tx_desc->pool_id);
+
+#ifdef CONFIG_ATH12K_XDP
+		/* XSK TX frames have skb == NULL; just count completion */
+		if (!desc_params.skb && ath12k_xdp_is_active(dp)) {
+			ath12k_xdp_tx_complete_zc(dp, 1);
+			continue;
+		}
+#endif
+
 		if (ts.buf_rel_source == HAL_WBM_REL_SRC_MODULE_FW) {
 			ath12k_dp_tx_process_htt_tx_complete(dp, (void *)tx_status,
 							     tx_ring, &desc_params);

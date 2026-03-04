@@ -15,6 +15,7 @@
 #include "dp.h"
 #include "dp_tx.h"
 #include "hal.h"
+#include "../dp_xdp.h"
 
 static int ath12k_wifi7_dp_service_srng(struct ath12k_dp *dp,
 					struct ath12k_ext_irq_grp *irq_grp,
@@ -52,7 +53,14 @@ static int ath12k_wifi7_dp_service_srng(struct ath12k_dp *dp,
 
 	if (dp->hw_params->ring_mask->rx[grp_id]) {
 		i = fls(dp->hw_params->ring_mask->rx[grp_id]) - 1;
-		work_done = ath12k_wifi7_dp_rx_process(dp, i, napi, budget);
+#ifdef CONFIG_ATH12K_XDP
+		if (ath12k_xdp_is_active(dp))
+			work_done = ath12k_xdp_rx_process_zc(dp, i, napi,
+							     budget);
+		else
+#endif
+			work_done = ath12k_wifi7_dp_rx_process(dp, i, napi,
+							       budget);
 		budget -= work_done;
 		tot_work_done += work_done;
 		if (budget <= 0)
@@ -130,7 +138,12 @@ static int ath12k_wifi7_dp_service_srng(struct ath12k_dp *dp,
 		struct dp_rxdma_ring *rx_ring = &dp->rx_refill_buf_ring;
 		LIST_HEAD(list);
 
-		ath12k_dp_rx_bufs_replenish(dp, rx_ring, &list, 0);
+#ifdef CONFIG_ATH12K_XDP
+		if (ath12k_xdp_is_active(dp))
+			ath12k_xdp_rx_bufs_replenish_zc(dp, rx_ring, &list, 0);
+		else
+#endif
+			ath12k_dp_rx_bufs_replenish(dp, rx_ring, &list, 0);
 	}
 
 	/* TODO: Implement handler for other interrupts */

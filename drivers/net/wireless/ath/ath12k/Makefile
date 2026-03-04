@@ -23,6 +23,7 @@ ath12k-y += core.o \
 	    p2p.o
 
 ath12k-$(CONFIG_ATH12K_AHB) += ahb.o
+ath12k-$(CONFIG_ATH12K_XDP) += dp_xdp.o
 
 obj-$(CONFIG_ATH12K) += wifi7/
 

@@ -22,6 +22,7 @@ struct ath12k_link_vif;
 struct ath12k_ext_irq_grp;
 struct ath12k_dp_rx_tid;
 struct ath12k_dp_rx_tid_rxq;
+struct ath12k_xdp;
 
 #define DP_MON_PURGE_TIMEOUT_MS     100
 #define DP_MON_SERVICE_BUDGET       128
@@ -332,12 +333,16 @@ struct ath12k_hp_update_timer {
 
 struct ath12k_rx_desc_info {
 	struct list_head list;
-	struct sk_buff *skb;
+	union {
+		struct sk_buff *skb;
+		struct xdp_buff *xdp;
+	};
 	u32 cookie;
 	u32 magic;
 	u8 in_use	: 1,
 	   device_id	: 3,
-	   reserved	: 4;
+	   xsk_buf	: 1,
+	   reserved	: 3;
 };
 
 struct ath12k_tx_desc_info {
@@ -550,6 +555,11 @@ struct ath12k_dp {
 	struct rhashtable *rhead_peer_addr;
 	struct rhashtable_params rhash_peer_addr_param;
 	struct ath12k_device_dp_stats device_stats;
+
+#ifdef CONFIG_ATH12K_XDP
+	/* XDP / AF_XDP zero-copy state – NULL when feature disabled */
+	struct ath12k_xdp *xdp;
+#endif
 };
 
 static inline u32 ath12k_dp_arch_tx_get_vdev_bank_config(struct ath12k_dp *dp,

@@ -34,8 +34,10 @@ struct ieee80211_vif;
  * @netdev: The mac80211 wlan netdev we are associated with
  * @prog: Currently installed XDP program (RCU-protected)
  * @pool: Active XSK buffer pool (when AF_XDP ZC is enabled)
- * @rxq: XDP RX queue info registered with the wlan netdev
- * @rxq_registered: Whether xdp_rxq_info has been registered
+ * @rxq: XDP RX queue info for ZC (MEM_TYPE_XSK_BUFF_POOL)
+ * @rxq_registered: Whether xdp_rxq_info (ZC) has been registered
+ * @rxq_drv: XDP RX queue info for non-ZC native XDP (MEM_TYPE_PAGE_ORDER0)
+ * @rxq_drv_registered: Whether rxq_drv has been registered
  * @napi_grp_id: ext_irq_grp index that handles the RX ring we use
  * @tx_ring_id: TCL ring index used for XSK TX
  * @tx_bank_id: TX bank profile ID for XSK TX (Ethernet encap)
@@ -50,6 +52,8 @@ struct ath12k_xdp {
 	struct xsk_buff_pool *pool;
 	struct xdp_rxq_info rxq;
 	bool rxq_registered;
+	struct xdp_rxq_info rxq_drv;
+	bool rxq_drv_registered;
 	int napi_grp_id;
 	u8 tx_ring_id;
 	int tx_bank_id;
@@ -84,6 +88,14 @@ int ath12k_xdp_rx_process_zc(struct ath12k_dp *dp, int ring_id,
 
 void ath12k_xdp_tx_complete_zc(struct ath12k_dp *dp, int count);
 
+/* Non-ZC XDP: run the attached XDP program on a received skb.
+ * Returns XDP action (XDP_PASS, XDP_REDIRECT, XDP_DROP).
+ * For XDP_REDIRECT the redirect has already been performed;
+ * caller should free the skb for REDIRECT and DROP, continue for PASS.
+ */
+int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
+			int *xdp_redirect_cnt);
+
 static inline bool ath12k_xdp_is_active(struct ath12k_dp *dp)
 {
 	return READ_ONCE(dp->xdp) && READ_ONCE(dp->xdp->pool);
@@ -96,6 +108,13 @@ static inline struct xsk_buff_pool *ath12k_xdp_get_pool(struct ath12k_dp *dp)
 	return xdp ? READ_ONCE(xdp->pool) : NULL;
 }
 
+static inline bool ath12k_xdp_has_prog(struct ath12k_dp *dp)
+{
+	struct ath12k_xdp *xdp_ctx = READ_ONCE(dp->xdp);
+
+	return xdp_ctx && rcu_access_pointer(xdp_ctx->prog);
+}
+
 #else /* !CONFIG_ATH12K_XDP */
 
 static inline int ath12k_xdp_alloc(struct ath12k_base *ab) { return 0; }
@@ -103,6 +122,9 @@ static inline void ath12k_xdp_free(struct ath12k_base *ab) {}
 static inline void ath12k_xdp_set_netdev(struct ath12k_base *ab,
 					  struct net_device *netdev) {}
 static inline bool ath12k_xdp_is_active(struct ath12k_dp *dp) { return false; }
+static inline bool ath12k_xdp_has_prog(struct ath12k_dp *dp) { return false; }
+static inline int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
+				      int *xdp_redirect_cnt) { return XDP_PASS; }
 
 #endif /* CONFIG_ATH12K_XDP */
 

@@ -6,6 +6,7 @@
 
 #include "dp_rx.h"
 #include "../dp_tx.h"
+#include "../dp_xdp.h"
 #include "../peer.h"
 #include "hal_qcn9274.h"
 #include "hal_wcn7850.h"
@@ -655,6 +656,10 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 	struct sk_buff *msdu;
 	bool done = false;
 	u64 desc_va;
+#ifdef CONFIG_ATH12K_XDP
+	bool run_xdp = ath12k_xdp_has_prog(dp);
+	int xdp_redir_cnt = 0;
+#endif
 
 	__skb_queue_head_init(&msdu_list);
 
@@ -730,6 +735,24 @@ try_again:
 			continue;
 		}
 
+#ifdef CONFIG_ATH12K_XDP
+		/* Run attached XDP program (non-ZC native mode).
+		 * For XDP_REDIRECT the data has been copied to the
+		 * AF_XDP umem; for DROP/REDIRECT we free the skb and
+		 * skip mac80211 delivery.
+		 */
+		if (run_xdp) {
+			int xdp_act;
+
+			xdp_act = ath12k_xdp_run_prog(dp, msdu,
+						       &xdp_redir_cnt);
+			if (xdp_act != XDP_PASS) {
+				dev_kfree_skb_any(msdu);
+				continue;
+			}
+		}
+#endif
+
 		msdu_info = &desc->rx_msdu_info;
 		mpdu_info = &desc->rx_mpdu_info;
 
@@ -772,6 +795,11 @@ try_again:
 	ath12k_hal_srng_access_end(ab, srng);
 
 	spin_unlock_bh(&srng->lock);
+
+#ifdef CONFIG_ATH12K_XDP
+	if (xdp_redir_cnt)
+		xdp_do_flush();
+#endif
 
 	if (!total_msdu_reaped)
 		goto exit;

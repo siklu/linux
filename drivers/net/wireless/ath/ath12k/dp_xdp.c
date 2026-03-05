@@ -758,6 +758,97 @@ EXPORT_SYMBOL(ath12k_xdp_mac_op_xsk_wakeup);
 /*  Lifecycle helpers (called from core.c)                             */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/*  Non-ZC native XDP: run program on skb-backed RX buffers           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * ath12k_xdp_run_prog - run attached XDP program on a received skb
+ * @dp: ath12k_dp context
+ * @msdu: the received skb (DMA already unmapped, data starts at hal_rx_desc)
+ * @xdp_redirect_cnt: incremented on successful XDP_REDIRECT
+ *
+ * Returns the XDP action.  For XDP_REDIRECT the redirect has already
+ * been performed via xdp_do_redirect(); caller should free the skb for
+ * REDIRECT/DROP and continue normal mac80211 processing for PASS.
+ *
+ * Note: this non-ZC path uses skb-backed buffers.  The xdp_do_redirect()
+ * copy-mode path (AF_XDP XSKMAP) copies the data immediately, so freeing
+ * the skb afterwards is safe.  DEVMAP redirect is not supported in this
+ * mode because the slab-backed buffer cannot be used with xdp_frame.
+ */
+int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
+			 int *xdp_redirect_cnt)
+{
+	struct ath12k_xdp *xdp_ctx = READ_ONCE(dp->xdp);
+	struct bpf_prog *prog;
+	struct xdp_buff xdp;
+	struct net_device *ndev;
+	struct hal_rx_desc *rx_desc;
+	struct hal_rx_desc_data rx_info = {};
+	u32 hal_desc_sz, headroom, act;
+
+	if (!xdp_ctx)
+		return XDP_PASS;
+
+	ndev = xdp_ctx->netdev;
+	if (!ndev || !xdp_ctx->rxq_drv_registered)
+		return XDP_PASS;
+
+	rcu_read_lock();
+	prog = rcu_dereference(xdp_ctx->prog);
+	if (!prog) {
+		rcu_read_unlock();
+		return XDP_PASS;
+	}
+
+	/* Parse HW descriptor at the start of the buffer */
+	rx_desc = (struct hal_rx_desc *)msdu->data;
+	hal_desc_sz = dp->hal->hal_desc_sz;
+	ath12k_dp_extract_rx_desc_data(dp->hal, &rx_info, rx_desc, rx_desc);
+
+	headroom = (msdu->data - msdu->head) + hal_desc_sz + rx_info.l3_pad_bytes;
+
+	/* Sanity: make sure packet fits in the buffer */
+	if (unlikely(hal_desc_sz + rx_info.l3_pad_bytes + rx_info.msdu_len >
+		     msdu->len + skb_tailroom(msdu))) {
+		rcu_read_unlock();
+		return XDP_DROP;
+	}
+
+	/* Set up xdp_buff over the skb data area */
+	xdp_init_buff(&xdp, msdu->truesize, &xdp_ctx->rxq_drv);
+	xdp_prepare_buff(&xdp, msdu->head, headroom, rx_info.msdu_len, false);
+
+	act = bpf_prog_run_xdp(prog, &xdp);
+
+	switch (act) {
+	case XDP_REDIRECT:
+		if (xdp_do_redirect(ndev, &xdp, prog) == 0) {
+			(*xdp_redirect_cnt)++;
+			rcu_read_unlock();
+			return XDP_REDIRECT;
+		}
+		rcu_read_unlock();
+		return XDP_DROP;
+	case XDP_PASS:
+		rcu_read_unlock();
+		return XDP_PASS;
+	case XDP_DROP:
+		rcu_read_unlock();
+		return XDP_DROP;
+	default:
+		bpf_warn_invalid_xdp_action(ndev, prog, act);
+		rcu_read_unlock();
+		return XDP_DROP;
+	}
+}
+EXPORT_SYMBOL(ath12k_xdp_run_prog);
+
+/* ------------------------------------------------------------------ */
+/*  Lifecycle helpers (called from core.c)                             */
+/* ------------------------------------------------------------------ */
+
 /**
  * ath12k_xdp_set_netdev - bind/unbind the mac80211 wlan netdev
  * @ab: ath12k_base
@@ -766,21 +857,61 @@ EXPORT_SYMBOL(ath12k_xdp_mac_op_xsk_wakeup);
  * Called from ath12k_mac_op_add_interface() /
  * ath12k_mac_op_remove_interface() so the XDP context knows which
  * netdev to register xdp_rxq_info on and pass to xdp_do_redirect().
+ *
+ * Also registers rxq_drv (non-ZC xdp_rxq_info) so that native XDP
+ * works even before an XSK pool is attached.
  */
 void ath12k_xdp_set_netdev(struct ath12k_base *ab, struct net_device *netdev)
 {
 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
 	struct ath12k_xdp *xdp_ctx = dp->xdp;
+	unsigned int napi_id = 0;
+	int grp_id, ret;
 
 	if (!xdp_ctx)
 		return;
 
+	/* Tear down old non-ZC rxq if switching/unbinding netdev */
+	if (xdp_ctx->rxq_drv_registered) {
+		xdp_rxq_info_unreg(&xdp_ctx->rxq_drv);
+		xdp_ctx->rxq_drv_registered = false;
+	}
+
 	xdp_ctx->netdev = netdev;
-	if (netdev)
+
+	if (netdev) {
+		/* Register non-ZC rxq_info so native XDP programs can
+		 * run xdp_do_redirect() even without an XSK pool.
+		 */
+		grp_id = xdp_ctx->napi_grp_id;
+		if (grp_id >= 0 && grp_id < ATH12K_EXT_IRQ_GRP_NUM_MAX)
+			napi_id = ab->ext_irq_grp[grp_id].napi.napi_id;
+
+		ret = xdp_rxq_info_reg(&xdp_ctx->rxq_drv, netdev, 0, napi_id);
+		if (ret) {
+			ath12k_warn(ab,
+				    "xdp: failed to register rxq_drv: %d\n",
+				    ret);
+			return;
+		}
+
+		ret = xdp_rxq_info_reg_mem_model(&xdp_ctx->rxq_drv,
+						  MEM_TYPE_PAGE_ORDER0, NULL);
+		if (ret) {
+			ath12k_warn(ab,
+				    "xdp: failed to register rxq_drv mem model: %d\n",
+				    ret);
+			xdp_rxq_info_unreg(&xdp_ctx->rxq_drv);
+			return;
+		}
+
+		xdp_ctx->rxq_drv_registered = true;
 		ath12k_dbg(ab, ATH12K_DBG_DP_RX,
-			   "xdp: bound to netdev %s\n", netdev_name(netdev));
-	else
+			   "xdp: bound to netdev %s (rxq_drv registered)\n",
+			   netdev_name(netdev));
+	} else {
 		ath12k_dbg(ab, ATH12K_DBG_DP_RX, "xdp: netdev unbound\n");
+	}
 }
 EXPORT_SYMBOL(ath12k_xdp_set_netdev);
 
@@ -835,6 +966,12 @@ void ath12k_xdp_free(struct ath12k_base *ab)
 
 	/* Tear down pool if still active */
 	ath12k_xdp_pool_disable(xdp_ctx);
+
+	/* Unregister non-ZC rxq if still registered */
+	if (xdp_ctx->rxq_drv_registered) {
+		xdp_rxq_info_unreg(&xdp_ctx->rxq_drv);
+		xdp_ctx->rxq_drv_registered = false;
+	}
 
 	/* Remove XDP program */
 	ath12k_xdp_setup_prog(xdp_ctx, NULL, NULL);

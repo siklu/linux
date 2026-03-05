@@ -543,6 +543,11 @@ static int ath12k_xdp_setup_prog(struct ath12k_xdp *xdp_ctx,
 {
 	struct bpf_prog *old_prog;
 
+	ath12k_info(xdp_ctx->ab,
+		    "XDP: setup_prog called, prog=%pK old=%pK netdev=%s\n",
+		    prog, rcu_access_pointer(xdp_ctx->prog),
+		    xdp_ctx->netdev ? netdev_name(xdp_ctx->netdev) : "(none)");
+
 	old_prog = rcu_replace_pointer(xdp_ctx->prog, prog,
 				       lockdep_rtnl_is_held());
 	if (old_prog)
@@ -813,6 +818,13 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	ath12k_dp_extract_rx_desc_data(dp->hal, &rx_info, rx_desc, rx_desc);
 	msdu_len = rx_info.msdu_len;
 
+	if (net_ratelimit())
+		ath12k_info(dp->ab,
+			    "XDP run_prog: decap=%u msdu_len=%u l3_pad=%u skb_len=%u tailroom=%u\n",
+			    rx_info.decap_type, msdu_len,
+			    rx_info.l3_pad_bytes,
+			    msdu->len, skb_tailroom(msdu));
+
 	/* Only run the XDP program on Ethernet-decapped data frames.
 	 *
 	 * Non-Ethernet decap types (native WiFi, RAW, 802.3) are
@@ -876,9 +888,19 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 	act = bpf_prog_run_xdp(prog, &xdp);
 
+	if (net_ratelimit())
+		ath12k_info(dp->ab,
+			    "XDP run_prog: act=%u msdu_len=%u\n",
+			    act, msdu_len);
+
 	switch (act) {
-	case XDP_REDIRECT:
-		if (xdp_do_redirect(ndev, &xdp, prog) == 0) {
+	case XDP_REDIRECT: {
+		int redir_err = xdp_do_redirect(ndev, &xdp, prog);
+
+		if (net_ratelimit())
+			ath12k_info(dp->ab,
+				    "XDP redirect: err=%d\n", redir_err);
+		if (redir_err == 0) {
 			/* Page consumed by redirect (AF_XDP copy-mode
 			 * copies data then calls xdp_return_buff →
 			 * put_page).  Do NOT put_page here.
@@ -890,6 +912,7 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 		put_page(page);
 		rcu_read_unlock();
 		return XDP_DROP;
+	}
 	case XDP_PASS:
 		put_page(page);
 		rcu_read_unlock();

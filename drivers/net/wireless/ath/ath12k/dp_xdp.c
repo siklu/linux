@@ -773,10 +773,11 @@ EXPORT_SYMBOL(ath12k_xdp_mac_op_xsk_wakeup);
  * been performed via xdp_do_redirect(); caller should free the skb for
  * REDIRECT/DROP and continue normal mac80211 processing for PASS.
  *
- * Note: this non-ZC path uses skb-backed buffers.  The xdp_do_redirect()
- * copy-mode path (AF_XDP XSKMAP) copies the data immediately, so freeing
- * the skb afterwards is safe.  DEVMAP redirect is not supported in this
- * mode because the slab-backed buffer cannot be used with xdp_frame.
+ * The ath12k normal RX path uses slab-backed skb buffers (dev_alloc_skb).
+ * The AF_XDP copy-mode code path (xsk_rcv → xdp_return_buff) expects
+ * page-backed memory so it can call put_page() after copying.  To make
+ * this work we allocate a page, copy the Ethernet frame there, and run
+ * the XDP program on the page-backed buffer.
  */
 int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 			 int *xdp_redirect_cnt)
@@ -787,7 +788,10 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	struct net_device *ndev;
 	struct hal_rx_desc *rx_desc;
 	struct hal_rx_desc_data rx_info = {};
-	u32 hal_desc_sz, headroom, act;
+	struct page *page;
+	void *page_data;
+	u32 hal_desc_sz, act;
+	u16 msdu_len;
 
 	if (!xdp_ctx)
 		return XDP_PASS;
@@ -807,8 +811,7 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	rx_desc = (struct hal_rx_desc *)msdu->data;
 	hal_desc_sz = dp->hal->hal_desc_sz;
 	ath12k_dp_extract_rx_desc_data(dp->hal, &rx_info, rx_desc, rx_desc);
-
-	headroom = (msdu->data - msdu->head) + hal_desc_sz + rx_info.l3_pad_bytes;
+	msdu_len = rx_info.msdu_len;
 
 	/* Only run the XDP program on Ethernet-decapped data frames.
 	 *
@@ -819,18 +822,13 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	 *
 	 * Even within Ethernet-decapped frames, bypass EAPOL so that
 	 * wpa_supplicant can complete the 4-way handshake.
-	 *
-	 * In the old xdpgeneric mode the kernel ran the XDP program
-	 * at netif_receive_skb() time — AFTER mac80211 had already
-	 * consumed control frames.  With native XDP we intercept
-	 * earlier and must let them through explicitly.
 	 */
 	if (rx_info.decap_type != DP_RX_DECAP_TYPE_ETHERNET2_DIX) {
 		rcu_read_unlock();
 		return XDP_PASS;
 	}
 
-	if (rx_info.msdu_len >= ETH_HLEN) {
+	if (msdu_len >= ETH_HLEN) {
 		u8 *pkt = msdu->data + hal_desc_sz + rx_info.l3_pad_bytes;
 		__be16 ethertype = *(__be16 *)(pkt + 2 * ETH_ALEN);
 
@@ -841,35 +839,68 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	}
 
 	/* Sanity: make sure packet fits in the buffer */
-	if (unlikely(hal_desc_sz + rx_info.l3_pad_bytes + rx_info.msdu_len >
+	if (unlikely(hal_desc_sz + rx_info.l3_pad_bytes + msdu_len >
 		     msdu->len + skb_tailroom(msdu))) {
 		rcu_read_unlock();
 		return XDP_DROP;
 	}
 
-	/* Set up xdp_buff over the skb data area */
-	xdp_init_buff(&xdp, msdu->truesize, &xdp_ctx->rxq_drv);
-	xdp_prepare_buff(&xdp, msdu->head, headroom, rx_info.msdu_len, false);
+	/* Sanity: packet must fit in a single page with headroom */
+	if (unlikely(msdu_len + XDP_PACKET_HEADROOM +
+		     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) >
+		     PAGE_SIZE)) {
+		rcu_read_unlock();
+		return XDP_PASS; /* let mac80211 handle oversized */
+	}
+
+	/* Allocate a page and copy the Ethernet frame there.
+	 * The RX skb is slab-backed (dev_alloc_skb / kmalloc).
+	 * xdp_return_buff() in the AF_XDP copy-mode path calls
+	 * put_page() via MEM_TYPE_PAGE_ORDER0, which requires
+	 * a proper page allocation.
+	 */
+	page = alloc_page(GFP_ATOMIC);
+	if (!page) {
+		rcu_read_unlock();
+		return XDP_DROP;
+	}
+
+	page_data = page_address(page);
+	memcpy(page_data + XDP_PACKET_HEADROOM,
+	       msdu->data + hal_desc_sz + rx_info.l3_pad_bytes,
+	       msdu_len);
+
+	xdp_init_buff(&xdp, PAGE_SIZE, &xdp_ctx->rxq_drv);
+	xdp_prepare_buff(&xdp, page_data, XDP_PACKET_HEADROOM,
+			 msdu_len, false);
 
 	act = bpf_prog_run_xdp(prog, &xdp);
 
 	switch (act) {
 	case XDP_REDIRECT:
 		if (xdp_do_redirect(ndev, &xdp, prog) == 0) {
+			/* Page consumed by redirect (AF_XDP copy-mode
+			 * copies data then calls xdp_return_buff →
+			 * put_page).  Do NOT put_page here.
+			 */
 			(*xdp_redirect_cnt)++;
 			rcu_read_unlock();
 			return XDP_REDIRECT;
 		}
+		put_page(page);
 		rcu_read_unlock();
 		return XDP_DROP;
 	case XDP_PASS:
+		put_page(page);
 		rcu_read_unlock();
 		return XDP_PASS;
 	case XDP_DROP:
+		put_page(page);
 		rcu_read_unlock();
 		return XDP_DROP;
 	default:
 		bpf_warn_invalid_xdp_action(ndev, prog, act);
+		put_page(page);
 		rcu_read_unlock();
 		return XDP_DROP;
 	}

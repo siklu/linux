@@ -717,7 +717,7 @@ static void ath12k_core_stop(struct ath12k_base *ab)
 	ath12k_dp_rx_pdev_reo_cleanup(ab);
 	ath12k_hif_stop(ab);
 	ath12k_wmi_detach(ab);
-	ath12k_xdp_destroy(ab);
+	ath12k_xdp_free(ab);
 	ath12k_dp_cmn_device_deinit(ath12k_ab_to_dp(ab));
 
 	/* De-Init of components as needed */
@@ -1306,9 +1306,9 @@ int ath12k_core_qmi_firmware_ready(struct ath12k_base *ab)
 		goto err_firmware_stop;
 	}
 
-	ret = ath12k_xdp_create(ab);
+	ret = ath12k_xdp_alloc(ab);
 	if (ret) {
-		ath12k_warn(ab, "failed to create XDP interface: %d\n", ret);
+		ath12k_warn(ab, "failed to alloc XDP context: %d\n", ret);
 		/* Non-fatal: continue without XDP support */
 	}
 
@@ -1352,7 +1352,7 @@ err_core_stop:
 	goto exit;
 
 err_deinit:
-	ath12k_xdp_destroy(ab);
+	ath12k_xdp_free(ab);
 	ath12k_dp_cmn_device_deinit(ath12k_ab_to_dp(ab));
 	mutex_unlock(&ab->core_lock);
 	mutex_unlock(&ag->mutex);

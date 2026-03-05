@@ -25,6 +25,7 @@
 #include "../testmode.h"
 #include "hal.h"
 #include "dp_tx.h"
+#include "../dp_xdp.h"
 
 static const guid_t wcn7850_uuid = GUID_INIT(0xf634f534, 0x6147, 0x11ec,
 					     0x90, 0xd6, 0x02, 0x42,
@@ -1018,6 +1019,10 @@ static const struct ieee80211_ops ath12k_ops_wifi7 = {
 	CFG80211_TESTMODE_CMD(ath12k_tm_cmd)
 #ifdef CONFIG_ATH12K_DEBUGFS
 	.link_sta_add_debugfs           = ath12k_debugfs_link_sta_op_add,
+#endif
+#ifdef CONFIG_ATH12K_XDP
+	.ndo_bpf			= ath12k_xdp_mac_op_bpf,
+	.ndo_xsk_wakeup			= ath12k_xdp_mac_op_xsk_wakeup,
 #endif
 };
 

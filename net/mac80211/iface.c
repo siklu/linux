@@ -889,6 +889,32 @@ static int ieee80211_netdev_setup_tc(struct net_device *dev,
 	return drv_net_setup_tc(local, sdata, dev, type, type_data);
 }
 
+#if IS_ENABLED(CONFIG_XDP_SOCKETS)
+static int ieee80211_ndo_bpf(struct net_device *dev, struct netdev_bpf *bpf)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	struct ieee80211_local *local = sdata->local;
+
+	if (!local->ops->ndo_bpf)
+		return -EOPNOTSUPP;
+
+	return local->ops->ndo_bpf(&local->hw, &sdata->vif, bpf);
+}
+
+static int ieee80211_ndo_xsk_wakeup(struct net_device *dev,
+				     u32 queue_id, u32 flags)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	struct ieee80211_local *local = sdata->local;
+
+	if (!local->ops->ndo_xsk_wakeup)
+		return -EOPNOTSUPP;
+
+	return local->ops->ndo_xsk_wakeup(&local->hw, &sdata->vif,
+					   queue_id, flags);
+}
+#endif /* CONFIG_XDP_SOCKETS */
+
 static const struct net_device_ops ieee80211_dataif_ops = {
 	.ndo_open		= ieee80211_open,
 	.ndo_stop		= ieee80211_stop,
@@ -897,6 +923,10 @@ static const struct net_device_ops ieee80211_dataif_ops = {
 	.ndo_set_rx_mode	= ieee80211_set_multicast_list,
 	.ndo_set_mac_address 	= ieee80211_change_mac,
 	.ndo_setup_tc		= ieee80211_netdev_setup_tc,
+#if IS_ENABLED(CONFIG_XDP_SOCKETS)
+	.ndo_bpf		= ieee80211_ndo_bpf,
+	.ndo_xsk_wakeup		= ieee80211_ndo_xsk_wakeup,
+#endif
 };
 
 static u16 ieee80211_monitor_select_queue(struct net_device *dev,
@@ -1004,6 +1034,10 @@ static const struct net_device_ops ieee80211_dataif_8023_ops = {
 	.ndo_set_mac_address	= ieee80211_change_mac,
 	.ndo_fill_forward_path	= ieee80211_netdev_fill_forward_path,
 	.ndo_setup_tc		= ieee80211_netdev_setup_tc,
+#if IS_ENABLED(CONFIG_XDP_SOCKETS)
+	.ndo_bpf		= ieee80211_ndo_bpf,
+	.ndo_xsk_wakeup		= ieee80211_ndo_xsk_wakeup,
+#endif
 };
 
 static bool ieee80211_iftype_supports_hdr_offload(enum nl80211_iftype iftype)

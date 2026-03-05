@@ -23,6 +23,7 @@
 #include "debugfs_sta.h"
 #include "dp.h"
 #include "dp_cmn.h"
+#include "dp_xdp.h"
 
 #define CHAN2G(_channel, _freq, _flags) { \
 	.band                   = NL80211_BAND_2GHZ, \
@@ -10673,6 +10674,17 @@ int ath12k_mac_op_add_interface(struct ieee80211_hw *hw,
 	/* Defer vdev creation until assign_chanctx or hw_scan is initiated as driver
 	 * will not know if this interface is an ML vif at this point.
 	 */
+
+	/* Bind XDP context to this wlan netdev so AF_XDP ZC works */
+	for_each_ar(ah, ar, i) {
+		struct wireless_dev *wdev = ieee80211_vif_to_wdev(vif);
+
+		if (wdev && wdev->netdev) {
+			ath12k_xdp_set_netdev(ar->ab, wdev->netdev);
+			break;
+		}
+	}
+
 	return 0;
 }
 EXPORT_SYMBOL(ath12k_mac_op_add_interface);
@@ -10813,6 +10825,14 @@ void ath12k_mac_op_remove_interface(struct ieee80211_hw *hw,
 
 		ath12k_mac_remove_link_interface(hw, arvif);
 		ath12k_mac_unassign_link_vif(arvif);
+	}
+
+	/* Unbind XDP context from this netdev */
+	{
+		struct ath12k_hw *ah = ath12k_hw_to_ah(hw);
+		struct ath12k *ar0 = ath12k_ah_to_ar(ah, 0);
+
+		ath12k_xdp_set_netdev(ar0->ab, NULL);
 	}
 }
 EXPORT_SYMBOL(ath12k_mac_op_remove_interface);

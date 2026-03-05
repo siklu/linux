@@ -24,6 +24,8 @@
 #include <net/ieee80211_radiotap.h>
 #include <linux/unaligned.h>
 
+struct netdev_bpf;
+
 /**
  * DOC: Introduction
  *
@@ -4904,6 +4906,14 @@ struct ieee80211_ops {
 			struct ieee80211_neg_ttlm *ttlm);
 	void (*prep_add_interface)(struct ieee80211_hw *hw,
 				   enum nl80211_iftype type);
+
+	/* XDP / AF_XDP zero-copy support – optional driver callbacks */
+	int (*ndo_bpf)(struct ieee80211_hw *hw,
+		       struct ieee80211_vif *vif,
+		       struct netdev_bpf *bpf);
+	int (*ndo_xsk_wakeup)(struct ieee80211_hw *hw,
+			      struct ieee80211_vif *vif,
+			      u32 queue_id, u32 flags);
 };
 
 /**

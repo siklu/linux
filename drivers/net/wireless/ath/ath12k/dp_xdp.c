@@ -4,12 +4,9 @@
  *
  * AF_XDP zero-copy support for ath12k
  *
- * This module provides a dedicated bypass netdev (ath12kxdp%d) that
- * supports XDP programs and AF_XDP zero-copy sockets.  When an AF_XDP
- * socket is bound to this netdev the driver switches the shared RXDMA
- * refill ring to use XSK buffer pool allocations and runs XDP programs
- * on received frames before (optionally) redirecting them to the
- * AF_XDP socket.
+ * XDP/XSK callbacks are plumbed through mac80211's ieee80211_ops
+ * (ndo_bpf / ndo_xsk_wakeup), so the user sees a single wlan interface
+ * (e.g. wlP2p1s0) that supports AF_XDP zero-copy.
  *
  * Architecturally ath12k uses a single RXDMA refill ring that feeds
  * all REO destination rings.  When XSK zero-copy is active **all** RX
@@ -19,12 +16,11 @@
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
-#include <linux/if_arp.h>
-#include <linux/rtnetlink.h>
 #include <linux/bpf.h>
 #include <linux/filter.h>
 #include <net/xdp_sock_drv.h>
 #include <net/xdp.h>
+#include <net/mac80211.h>
 
 #include "core.h"
 #include "dp.h"
@@ -229,6 +225,7 @@ int ath12k_xdp_rx_process_zc(struct ath12k_dp *dp, int ring_id,
 	struct ath12k_base *ab = dp->ab;
 	struct ath12k_hal *hal = dp->hal;
 	struct xsk_buff_pool *pool = xdp_ctx->pool;
+	struct net_device *ndev = xdp_ctx->netdev;
 	struct bpf_prog *xdp_prog;
 	struct hal_reo_dest_ring *reo_desc;
 	struct ath12k_rx_desc_info *desc_info;
@@ -352,23 +349,21 @@ int ath12k_xdp_rx_process_zc(struct ath12k_dp *dp, int ring_id,
 
 		switch (act) {
 		case XDP_REDIRECT:
-			if (xdp_do_redirect(xdp_ctx->netdev, xdp, xdp_prog)) {
+			if (xdp_do_redirect(ndev, xdp, xdp_prog)) {
 				xsk_buff_free(xdp);
 			} else {
 				xdp_xmit++;
 			}
 			break;
 		case XDP_PASS:
-			skb = ath12k_xdp_construct_skb(xdp, xdp_ctx->netdev);
+			skb = ath12k_xdp_construct_skb(xdp, ndev);
 			xsk_buff_free(xdp);
 			if (skb)
 				netif_receive_skb(skb);
 			break;
 		case XDP_TX:
 			/* For XDP_TX we'd need to loop back through the
-			 * TX path.  For now treat as redirect-to-self or
-			 * drop with a stat.  Full XDP_TX can be added
-			 * later.
+			 * TX path.  For now treat as drop.
 			 */
 			xsk_buff_free(xdp);
 			break;
@@ -538,35 +533,6 @@ static int ath12k_xdp_tx_zc(struct ath12k_xdp *xdp_ctx)
 }
 
 /* ------------------------------------------------------------------ */
-/*  Netdev operations for the XDP bypass interface                     */
-/* ------------------------------------------------------------------ */
-
-static int ath12k_xdp_ndev_open(struct net_device *dev)
-{
-	netif_carrier_on(dev);
-	netif_tx_start_all_queues(dev);
-	return 0;
-}
-
-static int ath12k_xdp_ndev_stop(struct net_device *dev)
-{
-	netif_carrier_off(dev);
-	netif_tx_stop_all_queues(dev);
-	return 0;
-}
-
-static netdev_tx_t ath12k_xdp_ndev_xmit(struct sk_buff *skb,
-					 struct net_device *dev)
-{
-	/* This netdev is primarily for AF_XDP zero-copy.
-	 * Non-XDP skb TX is not supported through this interface.
-	 */
-	dev_kfree_skb_any(skb);
-	dev->stats.tx_dropped++;
-	return NETDEV_TX_OK;
-}
-
-/* ------------------------------------------------------------------ */
 /*  XDP program setup                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -593,11 +559,17 @@ static int ath12k_xdp_pool_enable(struct ath12k_xdp *xdp_ctx,
 {
 	struct ath12k_dp *dp = xdp_ctx->dp;
 	struct ath12k_base *ab = xdp_ctx->ab;
+	struct net_device *ndev = xdp_ctx->netdev;
 	struct dp_rxdma_ring *rx_ring = &dp->rx_refill_buf_ring;
 	u32 frame_sz;
 	int ret, grp_id;
 	unsigned int napi_id = 0;
 	LIST_HEAD(list);
+
+	if (!ndev) {
+		ath12k_warn(ab, "XSK: no netdev bound, cannot enable pool\n");
+		return -ENODEV;
+	}
 
 	frame_sz = xsk_pool_get_rx_frame_size(pool);
 	if (frame_sz < DP_RX_BUFFER_SIZE) {
@@ -620,11 +592,11 @@ static int ath12k_xdp_pool_enable(struct ath12k_xdp *xdp_ctx,
 		xdp_ctx->napi_grp_id = grp_id;
 	}
 
-	/* Register xdp_rxq_info on the XDP netdev */
+	/* Register xdp_rxq_info on the wlan netdev */
 	if (xdp_ctx->rxq_registered)
 		xdp_rxq_info_unreg(&xdp_ctx->rxq);
 
-	ret = xdp_rxq_info_reg(&xdp_ctx->rxq, xdp_ctx->netdev, 0, napi_id);
+	ret = xdp_rxq_info_reg(&xdp_ctx->rxq, ndev, 0, napi_id);
 	if (ret) {
 		ath12k_warn(ab, "failed to register xdp_rxq_info: %d\n", ret);
 		goto err_dma_unmap;
@@ -650,7 +622,7 @@ static int ath12k_xdp_pool_enable(struct ath12k_xdp *xdp_ctx,
 	ath12k_xdp_rx_bufs_replenish_zc(dp, rx_ring, &list, 0);
 
 	ath12k_info(ab, "XSK buffer pool enabled on %s (frame_sz=%u)\n",
-		    netdev_name(xdp_ctx->netdev), frame_sz);
+		    netdev_name(ndev), frame_sz);
 
 	return 0;
 
@@ -670,7 +642,7 @@ static void ath12k_xdp_pool_disable(struct ath12k_xdp *xdp_ctx)
 		return;
 
 	ath12k_info(xdp_ctx->ab, "XSK buffer pool disabled on %s\n",
-		    netdev_name(xdp_ctx->netdev));
+		    xdp_ctx->netdev ? netdev_name(xdp_ctx->netdev) : "(none)");
 
 	WRITE_ONCE(xdp_ctx->pool, NULL);
 
@@ -699,12 +671,28 @@ static int ath12k_xdp_pool_setup(struct ath12k_xdp *xdp_ctx,
 }
 
 /* ------------------------------------------------------------------ */
-/*  ndo_bpf callback                                                   */
+/*  mac80211 ieee80211_ops: ndo_bpf callback                           */
 /* ------------------------------------------------------------------ */
 
-static int ath12k_xdp_ndo_bpf(struct net_device *dev, struct netdev_bpf *bpf)
+/**
+ * ath12k_xdp_mac_op_bpf - handle XDP/XSK commands from the wlan netdev
+ *
+ * Called via mac80211's ieee80211_ops->ndo_bpf, which itself is called
+ * by the kernel when an XDP program or XSK pool is attached to the
+ * wlan interface.
+ */
+int ath12k_xdp_mac_op_bpf(struct ieee80211_hw *hw,
+			   struct ieee80211_vif *vif,
+			   struct netdev_bpf *bpf)
 {
-	struct ath12k_xdp *xdp_ctx = netdev_priv(dev);
+	struct ath12k_hw *ah = ath12k_hw_to_ah(hw);
+	struct ath12k *ar = ath12k_ah_to_ar(ah, 0);
+	struct ath12k_base *ab = ar->ab;
+	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+	struct ath12k_xdp *xdp_ctx = READ_ONCE(dp->xdp);
+
+	if (!xdp_ctx)
+		return -ENODEV;
 
 	switch (bpf->command) {
 	case XDP_SETUP_PROG:
@@ -716,17 +704,28 @@ static int ath12k_xdp_ndo_bpf(struct net_device *dev, struct netdev_bpf *bpf)
 		return -EINVAL;
 	}
 }
+EXPORT_SYMBOL(ath12k_xdp_mac_op_bpf);
 
 /* ------------------------------------------------------------------ */
-/*  ndo_xsk_wakeup callback                                            */
+/*  mac80211 ieee80211_ops: ndo_xsk_wakeup callback                    */
 /* ------------------------------------------------------------------ */
 
-static int ath12k_xdp_wakeup(struct net_device *dev, u32 queue_id, u32 flags)
+int ath12k_xdp_mac_op_xsk_wakeup(struct ieee80211_hw *hw,
+				  struct ieee80211_vif *vif,
+				  u32 queue_id, u32 flags)
 {
-	struct ath12k_xdp *xdp_ctx = netdev_priv(dev);
-	struct ath12k_base *ab = xdp_ctx->ab;
+	struct ath12k_hw *ah = ath12k_hw_to_ah(hw);
+	struct ath12k *ar = ath12k_ah_to_ar(ah, 0);
+	struct ath12k_base *ab = ar->ab;
+	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+	struct ath12k_xdp *xdp_ctx = READ_ONCE(dp->xdp);
+	struct net_device *ndev;
 
-	if (!netif_carrier_ok(dev))
+	if (!xdp_ctx)
+		return -ENODEV;
+
+	ndev = xdp_ctx->netdev;
+	if (!ndev || !netif_carrier_ok(ndev))
 		return -ENETDOWN;
 
 	if (queue_id > 0)
@@ -753,61 +752,57 @@ static int ath12k_xdp_wakeup(struct net_device *dev, u32 queue_id, u32 flags)
 
 	return 0;
 }
+EXPORT_SYMBOL(ath12k_xdp_mac_op_xsk_wakeup);
 
 /* ------------------------------------------------------------------ */
-/*  Netdev ops table                                                   */
+/*  Lifecycle helpers (called from core.c)                             */
 /* ------------------------------------------------------------------ */
-
-static const struct net_device_ops ath12k_xdp_netdev_ops = {
-	.ndo_open		= ath12k_xdp_ndev_open,
-	.ndo_stop		= ath12k_xdp_ndev_stop,
-	.ndo_start_xmit		= ath12k_xdp_ndev_xmit,
-	.ndo_bpf		= ath12k_xdp_ndo_bpf,
-	.ndo_xsk_wakeup		= ath12k_xdp_wakeup,
-};
-
-/* ------------------------------------------------------------------ */
-/*  XDP netdev creation / destruction                                  */
-/* ------------------------------------------------------------------ */
-
-static void ath12k_xdp_ndev_setup(struct net_device *dev)
-{
-	dev->netdev_ops = &ath12k_xdp_netdev_ops;
-	dev->type = ARPHRD_NONE;
-	dev->flags = IFF_POINTOPOINT | IFF_NOARP | IFF_MULTICAST;
-	dev->priv_flags |= IFF_NO_QUEUE;
-	dev->features |= NETIF_F_SG | NETIF_F_HW_CSUM;
-	dev->min_mtu = ETH_MIN_MTU;
-	dev->max_mtu = ETH_DATA_LEN;
-	dev->mtu = ETH_DATA_LEN;
-	eth_hw_addr_random(dev);
-}
 
 /**
- * ath12k_xdp_create - create the XDP bypass netdev for an ath12k device
+ * ath12k_xdp_set_netdev - bind/unbind the mac80211 wlan netdev
  * @ab: ath12k_base
+ * @netdev: the wlan net_device, or NULL to unbind
  *
- * Creates a netdev named "ath12kxdp%d" that VPP (or any AF_XDP consumer)
- * can bind to for zero-copy operation.
+ * Called from ath12k_mac_op_add_interface() /
+ * ath12k_mac_op_remove_interface() so the XDP context knows which
+ * netdev to register xdp_rxq_info on and pass to xdp_do_redirect().
  */
-int ath12k_xdp_create(struct ath12k_base *ab)
+void ath12k_xdp_set_netdev(struct ath12k_base *ab, struct net_device *netdev)
 {
 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
-	struct net_device *ndev;
-	struct ath12k_xdp *xdp_ctx;
-	int ret;
+	struct ath12k_xdp *xdp_ctx = dp->xdp;
 
-	ndev = alloc_netdev(sizeof(*xdp_ctx), "ath12kxdp%d",
-			    NET_NAME_ENUM, ath12k_xdp_ndev_setup);
-	if (!ndev)
+	if (!xdp_ctx)
+		return;
+
+	xdp_ctx->netdev = netdev;
+	if (netdev)
+		ath12k_dbg(ab, ATH12K_DBG_DP_RX,
+			   "xdp: bound to netdev %s\n", netdev_name(netdev));
+	else
+		ath12k_dbg(ab, ATH12K_DBG_DP_RX, "xdp: netdev unbound\n");
+}
+EXPORT_SYMBOL(ath12k_xdp_set_netdev);
+
+/**
+ * ath12k_xdp_alloc - allocate XDP context for an ath12k device
+ * @ab: ath12k_base
+ *
+ * Called after DP rings are initialized.  The context is stored in
+ * dp->xdp and stays alive until ath12k_xdp_free().
+ */
+int ath12k_xdp_alloc(struct ath12k_base *ab)
+{
+	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
+	struct ath12k_xdp *xdp_ctx;
+
+	xdp_ctx = kzalloc(sizeof(*xdp_ctx), GFP_KERNEL);
+	if (!xdp_ctx)
 		return -ENOMEM;
 
-	SET_NETDEV_DEV(ndev, ab->dev);
-
-	xdp_ctx = netdev_priv(ndev);
-	xdp_ctx->netdev = ndev;
 	xdp_ctx->dp = dp;
 	xdp_ctx->ab = ab;
+	xdp_ctx->netdev = NULL;
 	xdp_ctx->pool = NULL;
 	xdp_ctx->rxq_registered = false;
 	xdp_ctx->napi_grp_id = ath12k_xdp_find_rx_napi_grp(ab);
@@ -816,24 +811,17 @@ int ath12k_xdp_create(struct ath12k_base *ab)
 	xdp_ctx->tx_vdev_id = 0;
 	xdp_ctx->tx_lmac_id = 0;
 
-	ret = register_netdev(ndev);
-	if (ret) {
-		ath12k_err(ab, "failed to register XDP netdev: %d\n", ret);
-		free_netdev(ndev);
-		return ret;
-	}
-
 	WRITE_ONCE(dp->xdp, xdp_ctx);
-	ath12k_info(ab, "created XDP interface %s\n", netdev_name(ndev));
+	ath12k_info(ab, "XDP zero-copy context allocated\n");
 
 	return 0;
 }
 
 /**
- * ath12k_xdp_destroy - tear down the XDP bypass netdev
+ * ath12k_xdp_free - tear down and free the XDP context
  * @ab: ath12k_base
  */
-void ath12k_xdp_destroy(struct ath12k_base *ab)
+void ath12k_xdp_free(struct ath12k_base *ab)
 {
 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
 	struct ath12k_xdp *xdp_ctx;
@@ -851,6 +839,5 @@ void ath12k_xdp_destroy(struct ath12k_base *ab)
 	/* Remove XDP program */
 	ath12k_xdp_setup_prog(xdp_ctx, NULL, NULL);
 
-	unregister_netdev(xdp_ctx->netdev);
-	free_netdev(xdp_ctx->netdev);
+	kfree(xdp_ctx);
 }

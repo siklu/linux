@@ -3,6 +3,10 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  *
  * AF_XDP zero-copy support for ath12k
+ *
+ * XDP/XSK callbacks are plumbed through mac80211's ieee80211_ops
+ * (ndo_bpf / ndo_xsk_wakeup) so they operate on the normal wlan
+ * interface (e.g. wlP2p1s0) instead of a separate bypass netdev.
  */
 
 #ifndef ATH12K_DP_XDP_H
@@ -14,6 +18,8 @@ struct ath12k_dp;
 struct ath12k_base;
 struct dp_rxdma_ring;
 struct napi_struct;
+struct ieee80211_hw;
+struct ieee80211_vif;
 
 #ifdef CONFIG_ATH12K_XDP
 
@@ -23,12 +29,12 @@ struct napi_struct;
 
 /**
  * struct ath12k_xdp - XDP/AF_XDP zero-copy state for ath12k
- * @netdev: Dedicated XDP bypass netdev (ath12kxdp%d)
  * @dp: Back pointer to ath12k_dp
  * @ab: Back pointer to ath12k_base
+ * @netdev: The mac80211 wlan netdev we are associated with
  * @prog: Currently installed XDP program (RCU-protected)
  * @pool: Active XSK buffer pool (when AF_XDP ZC is enabled)
- * @rxq: XDP RX queue info registered with the XDP netdev
+ * @rxq: XDP RX queue info registered with the wlan netdev
  * @rxq_registered: Whether xdp_rxq_info has been registered
  * @napi_grp_id: ext_irq_grp index that handles the RX ring we use
  * @tx_ring_id: TCL ring index used for XSK TX
@@ -37,9 +43,9 @@ struct napi_struct;
  * @tx_lmac_id: LMAC ID for XSK TX descriptors
  */
 struct ath12k_xdp {
-	struct net_device *netdev;
 	struct ath12k_dp *dp;
 	struct ath12k_base *ab;
+	struct net_device *netdev;
 	struct bpf_prog __rcu *prog;
 	struct xsk_buff_pool *pool;
 	struct xdp_rxq_info rxq;
@@ -51,9 +57,23 @@ struct ath12k_xdp {
 	u8 tx_lmac_id;
 };
 
-int ath12k_xdp_create(struct ath12k_base *ab);
-void ath12k_xdp_destroy(struct ath12k_base *ab);
+/* Lifecycle – called from core.c around DP init/deinit */
+int ath12k_xdp_alloc(struct ath12k_base *ab);
+void ath12k_xdp_free(struct ath12k_base *ab);
 
+/* Called from mac.c when a vif is added / removed to bind/unbind netdev */
+void ath12k_xdp_set_netdev(struct ath12k_base *ab,
+			    struct net_device *netdev);
+
+/* mac80211 ieee80211_ops callbacks – registered in wifi7/hw.c */
+int ath12k_xdp_mac_op_bpf(struct ieee80211_hw *hw,
+			   struct ieee80211_vif *vif,
+			   struct netdev_bpf *bpf);
+int ath12k_xdp_mac_op_xsk_wakeup(struct ieee80211_hw *hw,
+				  struct ieee80211_vif *vif,
+				  u32 queue_id, u32 flags);
+
+/* Data-path hooks – called from wifi7/dp.c */
 int ath12k_xdp_rx_bufs_replenish_zc(struct ath12k_dp *dp,
 				     struct dp_rxdma_ring *rx_ring,
 				     struct list_head *used_list,
@@ -78,8 +98,10 @@ static inline struct xsk_buff_pool *ath12k_xdp_get_pool(struct ath12k_dp *dp)
 
 #else /* !CONFIG_ATH12K_XDP */
 
-static inline int ath12k_xdp_create(struct ath12k_base *ab) { return 0; }
-static inline void ath12k_xdp_destroy(struct ath12k_base *ab) {}
+static inline int ath12k_xdp_alloc(struct ath12k_base *ab) { return 0; }
+static inline void ath12k_xdp_free(struct ath12k_base *ab) {}
+static inline void ath12k_xdp_set_netdev(struct ath12k_base *ab,
+					  struct net_device *netdev) {}
 static inline bool ath12k_xdp_is_active(struct ath12k_dp *dp) { return false; }
 
 #endif /* CONFIG_ATH12K_XDP */

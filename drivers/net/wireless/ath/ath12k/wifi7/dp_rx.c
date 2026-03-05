@@ -659,12 +659,6 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 #ifdef CONFIG_ATH12K_XDP
 	bool run_xdp = ath12k_xdp_has_prog(dp);
 	int xdp_redir_cnt = 0;
-
-	if (net_ratelimit())
-		ath12k_info(dp->ab,
-			    "XDP dp_rx: run_xdp=%d dp=%pK dp->xdp=%pK prog=%pK\n",
-			    run_xdp, dp, dp->xdp,
-			    dp->xdp ? rcu_access_pointer(dp->xdp->prog) : NULL);
 #endif
 
 	__skb_queue_head_init(&msdu_list);

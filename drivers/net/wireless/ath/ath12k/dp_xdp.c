@@ -543,11 +543,6 @@ static int ath12k_xdp_setup_prog(struct ath12k_xdp *xdp_ctx,
 {
 	struct bpf_prog *old_prog;
 
-	ath12k_info(xdp_ctx->ab,
-		    "XDP: setup_prog called, prog=%pK old=%pK netdev=%s\n",
-		    prog, rcu_access_pointer(xdp_ctx->prog),
-		    xdp_ctx->netdev ? netdev_name(xdp_ctx->netdev) : "(none)");
-
 	old_prog = rcu_replace_pointer(xdp_ctx->prog, prog,
 				       lockdep_rtnl_is_held());
 	if (old_prog)
@@ -778,6 +773,12 @@ EXPORT_SYMBOL(ath12k_xdp_mac_op_xsk_wakeup);
  * been performed via xdp_do_redirect(); caller should free the skb for
  * REDIRECT/DROP and continue normal mac80211 processing for PASS.
  *
+ * Handles both Ethernet-decapped frames (decap_type 2) where the data
+ * is already an Ethernet frame, and native-WiFi–decapped frames
+ * (decap_type 1, used in 4addr/WDS mode) where the frame must be
+ * converted from 802.11 + LLC/SNAP to Ethernet before running the XDP
+ * program.
+ *
  * The ath12k normal RX path uses slab-backed skb buffers (dev_alloc_skb).
  * The AF_XDP copy-mode code path (xsk_rcv → xdp_return_buff) expects
  * page-backed memory so it can call put_page() after copying.  To make
@@ -796,7 +797,8 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	struct page *page;
 	void *page_data;
 	u32 hal_desc_sz, act;
-	u16 msdu_len;
+	u16 msdu_len, eth_frame_len;
+	u8 *data_start;
 
 	if (!xdp_ctx)
 		return XDP_PASS;
@@ -818,88 +820,152 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	ath12k_dp_extract_rx_desc_data(dp->hal, &rx_info, rx_desc, rx_desc);
 	msdu_len = rx_info.msdu_len;
 
-	if (net_ratelimit())
-		ath12k_info(dp->ab,
-			    "XDP run_prog: decap=%u msdu_len=%u l3_pad=%u skb_len=%u tailroom=%u\n",
-			    rx_info.decap_type, msdu_len,
-			    rx_info.l3_pad_bytes,
-			    msdu->len, skb_tailroom(msdu));
+	/* Pointer to start of the decapped frame (after HAL desc + L3 pad) */
+	data_start = msdu->data + hal_desc_sz + rx_info.l3_pad_bytes;
 
-	/* Only run the XDP program on Ethernet-decapped data frames.
-	 *
-	 * Non-Ethernet decap types (native WiFi, RAW, 802.3) are
-	 * control/management frames or exception-path frames that
-	 * mac80211 must see — including EAPOL during key exchange
-	 * which is typically delivered in native WiFi format.
-	 *
-	 * Even within Ethernet-decapped frames, bypass EAPOL so that
-	 * wpa_supplicant can complete the 4-way handshake.
-	 */
-	if (rx_info.decap_type != DP_RX_DECAP_TYPE_ETHERNET2_DIX) {
-		rcu_read_unlock();
-		return XDP_PASS;
-	}
+	if (rx_info.decap_type == DP_RX_DECAP_TYPE_NATIVE_WIFI) {
+		/* --------------------------------------------------------
+		 * Native WiFi decap (used in 4addr/WDS mode):
+		 *   [802.11 hdr] + [LLC/SNAP (8 bytes)] + [payload]
+		 *
+		 * Convert to Ethernet format for XDP:
+		 *   [ethhdr (14 bytes)] + [payload]
+		 *
+		 * DA/SA are extracted from the 802.11 header using the
+		 * standard helpers (handles all ToDS/FromDS combinations
+		 * including 4-address frames).  EtherType comes from the
+		 * SNAP header.
+		 * -------------------------------------------------------- */
+		struct ieee80211_hdr *hdr;
+		struct ath12k_dp_rx_rfc1042_hdr *llc;
+		struct ethhdr *eth;
+		size_t hdr_len;
+		u16 payload_len;
+		u8 da[ETH_ALEN], sa[ETH_ALEN];
+		__be16 ethertype;
 
-	if (msdu_len >= ETH_HLEN) {
-		u8 *pkt = msdu->data + hal_desc_sz + rx_info.l3_pad_bytes;
-		__be16 ethertype = *(__be16 *)(pkt + 2 * ETH_ALEN);
+		hdr = (struct ieee80211_hdr *)data_start;
 
+		/* Only process data frames via XDP */
+		if (!ieee80211_is_data(hdr->frame_control)) {
+			rcu_read_unlock();
+			return XDP_PASS;
+		}
+
+		hdr_len = ieee80211_hdrlen(hdr->frame_control);
+
+		/* Need at least 802.11 hdr + LLC/SNAP */
+		if (msdu_len < hdr_len + sizeof(*llc)) {
+			rcu_read_unlock();
+			return XDP_PASS;
+		}
+
+		/* Extract DA and SA (handles 3-addr and 4-addr frames) */
+		ether_addr_copy(da, ieee80211_get_DA(hdr));
+		ether_addr_copy(sa, ieee80211_get_SA(hdr));
+
+		/* LLC/SNAP follows the 802.11 header */
+		llc = (struct ath12k_dp_rx_rfc1042_hdr *)
+			(data_start + hdr_len);
+		ethertype = llc->snap_type;
+
+		/* Bypass EAPOL so wpa_supplicant can do the handshake */
 		if (ethertype == htons(ETH_P_PAE)) {
 			rcu_read_unlock();
 			return XDP_PASS;
 		}
-	}
 
-	/* Sanity: make sure packet fits in the buffer */
-	if (unlikely(hal_desc_sz + rx_info.l3_pad_bytes + msdu_len >
-		     msdu->len + skb_tailroom(msdu))) {
+		payload_len = msdu_len - hdr_len - sizeof(*llc);
+		eth_frame_len = ETH_HLEN + payload_len;
+
+		/* Sanity: Ethernet frame must fit in a page */
+		if (unlikely(eth_frame_len + XDP_PACKET_HEADROOM +
+			     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) >
+			     PAGE_SIZE)) {
+			rcu_read_unlock();
+			return XDP_PASS;
+		}
+
+		page = alloc_page(GFP_ATOMIC);
+		if (!page) {
+			rcu_read_unlock();
+			return XDP_DROP;
+		}
+
+		page_data = page_address(page);
+
+		/* Build Ethernet header at page + headroom */
+		eth = (struct ethhdr *)(page_data + XDP_PACKET_HEADROOM);
+		ether_addr_copy(eth->h_dest, da);
+		ether_addr_copy(eth->h_source, sa);
+		eth->h_proto = ethertype;
+
+		/* Copy payload (after LLC/SNAP) right after Ethernet header */
+		memcpy((u8 *)eth + ETH_HLEN,
+		       data_start + hdr_len + sizeof(*llc),
+		       payload_len);
+
+		xdp_init_buff(&xdp, PAGE_SIZE, &xdp_ctx->rxq_drv);
+		xdp_prepare_buff(&xdp, page_data, XDP_PACKET_HEADROOM,
+				 eth_frame_len, false);
+
+	} else if (rx_info.decap_type == DP_RX_DECAP_TYPE_ETHERNET2_DIX) {
+		/* --------------------------------------------------------
+		 * Ethernet decap: data is already an Ethernet frame.
+		 * Copy to page-backed buffer and run XDP.
+		 * -------------------------------------------------------- */
+
+		/* Bypass EAPOL */
+		if (msdu_len >= ETH_HLEN) {
+			__be16 ethertype;
+
+			ethertype = *(__be16 *)(data_start + 2 * ETH_ALEN);
+			if (ethertype == htons(ETH_P_PAE)) {
+				rcu_read_unlock();
+				return XDP_PASS;
+			}
+		}
+
+		/* Sanity: make sure packet fits in the buffer */
+		if (unlikely(hal_desc_sz + rx_info.l3_pad_bytes + msdu_len >
+			     msdu->len + skb_tailroom(msdu))) {
+			rcu_read_unlock();
+			return XDP_DROP;
+		}
+
+		if (unlikely(msdu_len + XDP_PACKET_HEADROOM +
+			     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) >
+			     PAGE_SIZE)) {
+			rcu_read_unlock();
+			return XDP_PASS;
+		}
+
+		page = alloc_page(GFP_ATOMIC);
+		if (!page) {
+			rcu_read_unlock();
+			return XDP_DROP;
+		}
+
+		page_data = page_address(page);
+		memcpy(page_data + XDP_PACKET_HEADROOM, data_start, msdu_len);
+		eth_frame_len = msdu_len;
+
+		xdp_init_buff(&xdp, PAGE_SIZE, &xdp_ctx->rxq_drv);
+		xdp_prepare_buff(&xdp, page_data, XDP_PACKET_HEADROOM,
+				 eth_frame_len, false);
+
+	} else {
+		/* RAW, 802.3, or other decap: let mac80211 handle */
 		rcu_read_unlock();
-		return XDP_DROP;
+		return XDP_PASS;
 	}
-
-	/* Sanity: packet must fit in a single page with headroom */
-	if (unlikely(msdu_len + XDP_PACKET_HEADROOM +
-		     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) >
-		     PAGE_SIZE)) {
-		rcu_read_unlock();
-		return XDP_PASS; /* let mac80211 handle oversized */
-	}
-
-	/* Allocate a page and copy the Ethernet frame there.
-	 * The RX skb is slab-backed (dev_alloc_skb / kmalloc).
-	 * xdp_return_buff() in the AF_XDP copy-mode path calls
-	 * put_page() via MEM_TYPE_PAGE_ORDER0, which requires
-	 * a proper page allocation.
-	 */
-	page = alloc_page(GFP_ATOMIC);
-	if (!page) {
-		rcu_read_unlock();
-		return XDP_DROP;
-	}
-
-	page_data = page_address(page);
-	memcpy(page_data + XDP_PACKET_HEADROOM,
-	       msdu->data + hal_desc_sz + rx_info.l3_pad_bytes,
-	       msdu_len);
-
-	xdp_init_buff(&xdp, PAGE_SIZE, &xdp_ctx->rxq_drv);
-	xdp_prepare_buff(&xdp, page_data, XDP_PACKET_HEADROOM,
-			 msdu_len, false);
 
 	act = bpf_prog_run_xdp(prog, &xdp);
-
-	if (net_ratelimit())
-		ath12k_info(dp->ab,
-			    "XDP run_prog: act=%u msdu_len=%u\n",
-			    act, msdu_len);
 
 	switch (act) {
 	case XDP_REDIRECT: {
 		int redir_err = xdp_do_redirect(ndev, &xdp, prog);
 
-		if (net_ratelimit())
-			ath12k_info(dp->ab,
-				    "XDP redirect: err=%d\n", redir_err);
 		if (redir_err == 0) {
 			/* Page consumed by redirect (AF_XDP copy-mode
 			 * copies data then calls xdp_return_buff →

@@ -810,15 +810,27 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 	headroom = (msdu->data - msdu->head) + hal_desc_sz + rx_info.l3_pad_bytes;
 
-	/* Let EAPOL (802.1X) and pre-auth frames through to mac80211 so
-	 * wpa_supplicant can complete the 4-way handshake.  In the old
-	 * xdpgeneric mode these never reached the XDP program because
-	 * mac80211 delivered them via the control path before
-	 * netif_receive_skb().  With native XDP we intercept earlier,
-	 * so we must explicitly let them pass.
+	/* Only run the XDP program on Ethernet-decapped data frames.
+	 *
+	 * Non-Ethernet decap types (native WiFi, RAW, 802.3) are
+	 * control/management frames or exception-path frames that
+	 * mac80211 must see — including EAPOL during key exchange
+	 * which is typically delivered in native WiFi format.
+	 *
+	 * Even within Ethernet-decapped frames, bypass EAPOL so that
+	 * wpa_supplicant can complete the 4-way handshake.
+	 *
+	 * In the old xdpgeneric mode the kernel ran the XDP program
+	 * at netif_receive_skb() time — AFTER mac80211 had already
+	 * consumed control frames.  With native XDP we intercept
+	 * earlier and must let them through explicitly.
 	 */
-	if (rx_info.decap_type == DP_RX_DECAP_TYPE_ETHERNET2_DIX &&
-	    rx_info.msdu_len >= ETH_HLEN) {
+	if (rx_info.decap_type != DP_RX_DECAP_TYPE_ETHERNET2_DIX) {
+		rcu_read_unlock();
+		return XDP_PASS;
+	}
+
+	if (rx_info.msdu_len >= ETH_HLEN) {
 		u8 *pkt = msdu->data + hal_desc_sz + rx_info.l3_pad_bytes;
 		__be16 ethertype = *(__be16 *)(pkt + 2 * ETH_ALEN);
 

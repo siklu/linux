@@ -16,6 +16,7 @@
 
 #include <linux/netdevice.h>
 #include <linux/etherdevice.h>
+#include <linux/if_ether.h>
 #include <linux/bpf.h>
 #include <linux/filter.h>
 #include <net/xdp_sock_drv.h>
@@ -808,6 +809,24 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	ath12k_dp_extract_rx_desc_data(dp->hal, &rx_info, rx_desc, rx_desc);
 
 	headroom = (msdu->data - msdu->head) + hal_desc_sz + rx_info.l3_pad_bytes;
+
+	/* Let EAPOL (802.1X) and pre-auth frames through to mac80211 so
+	 * wpa_supplicant can complete the 4-way handshake.  In the old
+	 * xdpgeneric mode these never reached the XDP program because
+	 * mac80211 delivered them via the control path before
+	 * netif_receive_skb().  With native XDP we intercept earlier,
+	 * so we must explicitly let them pass.
+	 */
+	if (rx_info.decap_type == DP_RX_DECAP_TYPE_ETHERNET2_DIX &&
+	    rx_info.msdu_len >= ETH_HLEN) {
+		u8 *pkt = msdu->data + hal_desc_sz + rx_info.l3_pad_bytes;
+		__be16 ethertype = *(__be16 *)(pkt + 2 * ETH_ALEN);
+
+		if (ethertype == htons(ETH_P_PAE)) {
+			rcu_read_unlock();
+			return XDP_PASS;
+		}
+	}
 
 	/* Sanity: make sure packet fits in the buffer */
 	if (unlikely(hal_desc_sz + rx_info.l3_pad_bytes + rx_info.msdu_len >

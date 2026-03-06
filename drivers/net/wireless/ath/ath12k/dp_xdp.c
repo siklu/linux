@@ -806,9 +806,8 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 	struct net_device *ndev;
 	struct hal_rx_desc *rx_desc;
 	struct hal_rx_desc_data rx_info = {};
-	struct page *page;
 	void *page_data;
-	u32 hal_desc_sz, act;
+	u32 hal_desc_sz, act, alloc_sz;
 	u16 msdu_len, eth_frame_len;
 	u8 *data_start;
 
@@ -860,10 +859,6 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 		/* Only process data frames via XDP */
 		if (!ieee80211_is_data(hdr->frame_control)) {
-			if (net_ratelimit())
-				ath12k_info(dp->ab,
-					    "XDP nwifi: non-data fc=0x%04x, PASS\n",
-					    le16_to_cpu(hdr->frame_control));
 			rcu_read_unlock();
 			return XDP_PASS;
 		}
@@ -894,32 +889,14 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 		payload_len = msdu_len - hdr_len - sizeof(*llc);
 		eth_frame_len = ETH_HLEN + payload_len;
 
-		if (net_ratelimit())
-			ath12k_info(dp->ab,
-				    "XDP nwifi: fc=0x%04x hdr_len=%zu msdu_len=%u "
-				    "llc=%02x:%02x:%02x etype=0x%04x payload=%u "
-				    "DA=%pM SA=%pM\n",
-				    le16_to_cpu(hdr->frame_control),
-				    hdr_len, msdu_len,
-				    llc->llc_dsap, llc->llc_ssap, llc->llc_ctrl,
-				    ntohs(ethertype), payload_len,
-				    da, sa);
+		alloc_sz = SKB_DATA_ALIGN(XDP_PACKET_HEADROOM + eth_frame_len) +
+			   SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
 
-		/* Sanity: Ethernet frame must fit in a page */
-		if (unlikely(eth_frame_len + XDP_PACKET_HEADROOM +
-			     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) >
-			     PAGE_SIZE)) {
-			rcu_read_unlock();
-			return XDP_PASS;
-		}
-
-		page = alloc_page(GFP_ATOMIC);
-		if (!page) {
+		page_data = napi_alloc_frag(alloc_sz);
+		if (!page_data) {
 			rcu_read_unlock();
 			return XDP_DROP;
 		}
-
-		page_data = page_address(page);
 
 		/* Build Ethernet header at page + headroom */
 		eth = (struct ethhdr *)(page_data + XDP_PACKET_HEADROOM);
@@ -932,7 +909,7 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 		       data_start + hdr_len + sizeof(*llc),
 		       payload_len);
 
-		xdp_init_buff(&xdp, PAGE_SIZE, &xdp_ctx->rxq_drv);
+		xdp_init_buff(&xdp, alloc_sz, &xdp_ctx->rxq_drv);
 		xdp_prepare_buff(&xdp, page_data, XDP_PACKET_HEADROOM,
 				 eth_frame_len, false);
 
@@ -953,31 +930,20 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 			}
 		}
 
-		/* Sanity: make sure packet fits in the buffer */
-		if (unlikely(hal_desc_sz + rx_info.l3_pad_bytes + msdu_len >
-			     msdu->len + skb_tailroom(msdu))) {
-			rcu_read_unlock();
-			return XDP_DROP;
-		}
-
-		if (unlikely(msdu_len + XDP_PACKET_HEADROOM +
-			     SKB_DATA_ALIGN(sizeof(struct skb_shared_info)) >
-			     PAGE_SIZE)) {
-			rcu_read_unlock();
-			return XDP_PASS;
-		}
-
-		page = alloc_page(GFP_ATOMIC);
-		if (!page) {
-			rcu_read_unlock();
-			return XDP_DROP;
-		}
-
-		page_data = page_address(page);
-		memcpy(page_data + XDP_PACKET_HEADROOM, data_start, msdu_len);
 		eth_frame_len = msdu_len;
 
-		xdp_init_buff(&xdp, PAGE_SIZE, &xdp_ctx->rxq_drv);
+		alloc_sz = SKB_DATA_ALIGN(XDP_PACKET_HEADROOM + eth_frame_len) +
+			   SKB_DATA_ALIGN(sizeof(struct skb_shared_info));
+
+		page_data = napi_alloc_frag(alloc_sz);
+		if (!page_data) {
+			rcu_read_unlock();
+			return XDP_DROP;
+		}
+
+		memcpy(page_data + XDP_PACKET_HEADROOM, data_start, msdu_len);
+
+		xdp_init_buff(&xdp, alloc_sz, &xdp_ctx->rxq_drv);
 		xdp_prepare_buff(&xdp, page_data, XDP_PACKET_HEADROOM,
 				 eth_frame_len, false);
 
@@ -989,53 +955,35 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 	act = bpf_prog_run_xdp(prog, &xdp);
 
-	if (net_ratelimit())
-		ath12k_info(dp->ab,
-			    "XDP result: act=%u eth_frame_len=%u decap=%u\n",
-			    act, eth_frame_len, rx_info.decap_type);
-
 	switch (act) {
 	case XDP_REDIRECT: {
 		int redir_err;
 
-		if (net_ratelimit())
-			ath12k_info(dp->ab,
-				    "XDP pre-redirect: ndev=%s rxq_dev=%s rxq_qi=%u rxq_mem=%u\n",
-				    netdev_name(ndev),
-				    xdp.rxq->dev ? netdev_name(xdp.rxq->dev) : "(null)",
-				    xdp.rxq->queue_index,
-				    xdp.rxq->mem.type);
-
 		redir_err = xdp_do_redirect(ndev, &xdp, prog);
-
-		if (net_ratelimit())
-			ath12k_info(dp->ab,
-				    "XDP redirect: err=%d\n", redir_err);
-
 		if (redir_err == 0) {
-			/* Page consumed by redirect (AF_XDP copy-mode
-			 * copies data then calls xdp_return_buff →
-			 * put_page).  Do NOT put_page here.
+			/* Fragment consumed by redirect (AF_XDP
+			 * copy-mode copies data then calls
+			 * xdp_return_buff → page_frag_free).
 			 */
 			(*xdp_redirect_cnt)++;
 			rcu_read_unlock();
 			return XDP_REDIRECT;
 		}
-		put_page(page);
+		skb_free_frag(page_data);
 		rcu_read_unlock();
 		return XDP_DROP;
 	}
 	case XDP_PASS:
-		put_page(page);
+		skb_free_frag(page_data);
 		rcu_read_unlock();
 		return XDP_PASS;
 	case XDP_DROP:
-		put_page(page);
+		skb_free_frag(page_data);
 		rcu_read_unlock();
 		return XDP_DROP;
 	default:
 		bpf_warn_invalid_xdp_action(ndev, prog, act);
-		put_page(page);
+		skb_free_frag(page_data);
 		rcu_read_unlock();
 		return XDP_DROP;
 	}
@@ -1093,7 +1041,7 @@ void ath12k_xdp_set_netdev(struct ath12k_base *ab, struct net_device *netdev)
 		}
 
 		ret = xdp_rxq_info_reg_mem_model(&xdp_ctx->rxq_drv,
-						  MEM_TYPE_PAGE_ORDER0, NULL);
+						  MEM_TYPE_PAGE_SHARED, NULL);
 		if (ret) {
 			ath12k_warn(ab,
 				    "xdp: failed to register rxq_drv mem model: %d\n",

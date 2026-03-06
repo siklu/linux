@@ -984,7 +984,17 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 	switch (act) {
 	case XDP_REDIRECT: {
-		int redir_err = xdp_do_redirect(ndev, &xdp, prog);
+		int redir_err;
+
+		if (net_ratelimit())
+			ath12k_info(dp->ab,
+				    "XDP pre-redirect: ndev=%s rxq_dev=%s rxq_qi=%u rxq_mem=%u\n",
+				    netdev_name(ndev),
+				    xdp.rxq->dev ? netdev_name(xdp.rxq->dev) : "(null)",
+				    xdp.rxq->queue_index,
+				    xdp.rxq->mem.type);
+
+		redir_err = xdp_do_redirect(ndev, &xdp, prog);
 
 		if (net_ratelimit())
 			ath12k_info(dp->ab,

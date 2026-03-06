@@ -848,6 +848,10 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 		/* Only process data frames via XDP */
 		if (!ieee80211_is_data(hdr->frame_control)) {
+			if (net_ratelimit())
+				ath12k_info(dp->ab,
+					    "XDP nwifi: non-data fc=0x%04x, PASS\n",
+					    le16_to_cpu(hdr->frame_control));
 			rcu_read_unlock();
 			return XDP_PASS;
 		}
@@ -877,6 +881,17 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 		payload_len = msdu_len - hdr_len - sizeof(*llc);
 		eth_frame_len = ETH_HLEN + payload_len;
+
+		if (net_ratelimit())
+			ath12k_info(dp->ab,
+				    "XDP nwifi: fc=0x%04x hdr_len=%zu msdu_len=%u "
+				    "llc=%02x:%02x:%02x etype=0x%04x payload=%u "
+				    "DA=%pM SA=%pM\n",
+				    le16_to_cpu(hdr->frame_control),
+				    hdr_len, msdu_len,
+				    llc->llc_dsap, llc->llc_ssap, llc->llc_ctrl,
+				    ntohs(ethertype), payload_len,
+				    da, sa);
 
 		/* Sanity: Ethernet frame must fit in a page */
 		if (unlikely(eth_frame_len + XDP_PACKET_HEADROOM +
@@ -962,9 +977,18 @@ int ath12k_xdp_run_prog(struct ath12k_dp *dp, struct sk_buff *msdu,
 
 	act = bpf_prog_run_xdp(prog, &xdp);
 
+	if (net_ratelimit())
+		ath12k_info(dp->ab,
+			    "XDP result: act=%u eth_frame_len=%u decap=%u\n",
+			    act, eth_frame_len, rx_info.decap_type);
+
 	switch (act) {
 	case XDP_REDIRECT: {
 		int redir_err = xdp_do_redirect(ndev, &xdp, prog);
+
+		if (net_ratelimit())
+			ath12k_info(dp->ab,
+				    "XDP redirect: err=%d\n", redir_err);
 
 		if (redir_err == 0) {
 			/* Page consumed by redirect (AF_XDP copy-mode

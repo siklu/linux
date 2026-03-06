@@ -691,12 +691,24 @@ int ath12k_xdp_mac_op_bpf(struct ieee80211_hw *hw,
 	struct ath12k_base *ab = ar->ab;
 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
 	struct ath12k_xdp *xdp_ctx = READ_ONCE(dp->xdp);
+	struct wireless_dev *wdev;
+	struct net_device *dev;
 
 	if (!xdp_ctx)
 		return -ENODEV;
 
 	switch (bpf->command) {
 	case XDP_SETUP_PROG:
+		/* Re-register rxq_drv on the netdev that the XDP program
+		 * is being attached to.  In AP mode with 4addr/WDS, VPP
+		 * binds AF_XDP to wlP2p1s0.sta1 (AP_VLAN), not the base
+		 * wlP2p1s0.  The xsk_rcv_check() does a pointer comparison
+		 * of xs->dev vs xdp->rxq->dev, so they must match.
+		 */
+		wdev = ieee80211_vif_to_wdev(vif);
+		dev = wdev ? wdev->netdev : NULL;
+		if (dev && dev != xdp_ctx->netdev)
+			ath12k_xdp_set_netdev(ab, dev);
 		return ath12k_xdp_setup_prog(xdp_ctx, bpf->prog, bpf->extack);
 	case XDP_SETUP_XSK_POOL:
 		return ath12k_xdp_pool_setup(xdp_ctx, bpf->xsk.pool,

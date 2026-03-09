@@ -5465,7 +5465,7 @@ send_tx_power:
 		goto err_fallback;
 	}
 
-	*dbm = ar->chan_tx_pwr;
+	*dbm = txpwr;
 	ath12k_dbg(ar->ab, ATH12K_DBG_MAC, "txpower fetched from firmware %d dBm\n",
 		   *dbm);
 	return 0;

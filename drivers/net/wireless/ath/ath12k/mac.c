@@ -5409,6 +5409,7 @@ int ath12k_mac_op_get_txpower(struct ieee80211_hw *hw,
 	struct ath12k_base *ab;
 	struct ath12k *ar;
 	int ret;
+	s16 txpwr;
 
 	/* Final Tx power is minimum of Target Power, CTL power, Regulatory
 	 * Power, PSD EIRP Power. We just know the Regulatory power from the
@@ -5461,7 +5462,17 @@ int ath12k_mac_op_get_txpower(struct ieee80211_hw *hw,
 	ath12k_fw_stats_reset(ar);
 
 send_tx_power:
-	*dbm = ar->chan_tx_pwr;
+	txpwr = ar->chan_tx_pwr;
+	/* Check whether the tx power value is valid before reporting to mac80211. */
+	if (txpwr > ATH12K_TX_POWER_MAX_VAL ||
+	    txpwr < ATH12K_TX_POWER_MIN_VAL) {
+		ath12k_dbg(ar->ab, ATH12K_DBG_MAC,
+			   "invalid txpower fetched from firmware %d dBm\n",
+			   txpwr);
+		goto err_fallback;
+	}
+
+	*dbm = txpwr;
 	ath12k_dbg(ar->ab, ATH12K_DBG_MAC, "txpower fetched from firmware %d dBm\n",
 		   *dbm);
 	return 0;

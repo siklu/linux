@@ -35,6 +35,8 @@
 #include "debugfs_htt_stats.h"
 #include "coredump.h"
 
+//#define ATH12k_ENABLE_WAKEUP
+
 #define SM(_v, _f) (((_v) << _f##_LSB) & _f##_MASK)
 
 #define ATH12K_TX_MGMT_NUM_PENDING_MAX	512
@@ -399,6 +401,10 @@ struct ath12k_vif {
 	 * especially because it has a flexible array. Find a better way.
 	 */
 	struct ieee80211_chanctx_conf chanctx;
+
+	struct bpf_prog *xdp_prog;
+	struct xdp_rxq_info *xdp_rxq;
+	struct xsk_buff_pool *xsk_pool;
 };
 
 struct ath12k_vif_iter {
@@ -966,6 +972,13 @@ struct ath12k_device_dp_stats {
 	u32 tx_enqueued[DP_TCL_NUM_RING_MAX];
 	u32 tx_completed[DP_TCL_NUM_RING_MAX];
 	u32 reo_excep_msdu_buf_type;
+	u32 rx_alloc_fail_xdp;
+	u32 rx_alloc_fail_page;
+	u32 rx_desc_unavailable;
+	u32 rx_ring_full;
+	u32 rx_replenish_fail;
+	u32 rx_replenish_calls;
+	u32 rx_xdp_redirect_fail;
 };
 
 struct ath12k_reg_freq {

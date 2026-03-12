@@ -1085,6 +1085,22 @@ static ssize_t ath12k_debugfs_dump_device_dp_stats(struct file *file,
 			 device_stats->err_ring_pkts);
 	len += scnprintf(buf + len, size - len, "Invalid RBM: %u\n\n",
 			 device_stats->invalid_rbm);
+	len += scnprintf(buf + len, size - len, "RX Allocation Failures:\n");
+	len += scnprintf(buf + len, size - len, "XDP: %u\n",
+			 device_stats->rx_alloc_fail_xdp);
+	len += scnprintf(buf + len, size - len, "Page: %u\n",
+			 device_stats->rx_alloc_fail_page);
+	len += scnprintf(buf + len, size - len, "Desc Unavailable: %u\n",
+			 device_stats->rx_desc_unavailable);
+	len += scnprintf(buf + len, size - len, "Ring Full: %u\n",
+			 device_stats->rx_ring_full);
+	len += scnprintf(buf + len, size - len, "Replenish Fail: %u\n",
+			 device_stats->rx_replenish_fail);
+	len += scnprintf(buf + len, size - len, "Replenish Calls: %u\n",
+			 device_stats->rx_replenish_calls);
+	len += scnprintf(buf + len, size - len, "Redirect Fail: %u\n\n",
+			 device_stats->rx_xdp_redirect_fail);
+
 	len += scnprintf(buf + len, size - len, "RXDMA errors:\n");
 
 	for (i = 0; i < HAL_REO_ENTR_RING_RXDMA_ECODE_MAX; i++)

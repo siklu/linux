@@ -223,10 +223,6 @@ static int ieee80211_can_powered_addr_change(struct ieee80211_sub_if_data *sdata
 	if (netif_carrier_ok(sdata->dev))
 		return -EBUSY;
 
-	/* if any stations are set known (so they know this vif too), reject */
-	if (sta_info_get_by_idx(sdata, 0))
-		return -EBUSY;
-
 	/* First check no ROC work is happening on this iface */
 	list_for_each_entry(roc, &local->roc_list, list) {
 		if (roc->sdata != sdata)
@@ -246,16 +242,12 @@ static int ieee80211_can_powered_addr_change(struct ieee80211_sub_if_data *sdata
 			ret = -EBUSY;
 	}
 
-	/*
-	 * More interface types could be added here but changing the
-	 * address while powered makes the most sense in client modes.
-	 */
 	switch (sdata->vif.type) {
 	case NL80211_IFTYPE_STATION:
 	case NL80211_IFTYPE_P2P_CLIENT:
-		/* refuse while connecting */
-		if (sdata->u.mgd.auth_data || sdata->u.mgd.assoc_data)
-			return -EBUSY;
+		/* More interface types could be added here but changing the
+		 * address while powered makes the most sense in client modes.
+		 */
 		break;
 	default:
 		ret = -EOPNOTSUPP;
@@ -464,6 +456,11 @@ static int ieee80211_open(struct net_device *dev)
 	err = ieee80211_check_concurrent_iface(sdata, sdata->vif.type);
 	if (err)
 		return err;
+
+	dev->xdp_features = NETDEV_XDP_ACT_BASIC |
+	NETDEV_XDP_ACT_REDIRECT |
+	NETDEV_XDP_ACT_NDO_XMIT |
+	NETDEV_XDP_ACT_XSK_ZEROCOPY;
 
 	return ieee80211_do_open(&sdata->wdev, true);
 }
@@ -889,6 +886,41 @@ static int ieee80211_netdev_setup_tc(struct net_device *dev,
 	return drv_net_setup_tc(local, sdata, dev, type, type_data);
 }
 
+static int ieee80211_ndo_bpf(struct net_device *dev, struct netdev_bpf *bpf)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	struct ieee80211_local *local = sdata->local;
+
+	if (!local->ops->xdp_op)
+		return -EOPNOTSUPP;
+
+	return local->ops->xdp_op(&local->hw, &sdata->vif, bpf);
+}
+
+static int ieee80211_ndo_xdp_xmit(struct net_device *dev, int n,
+				  struct xdp_frame **frames, u32 flags)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	struct ieee80211_local *local = sdata->local;
+
+	if (!local->ops->xdp_xmit)
+		return -EOPNOTSUPP;
+
+	return local->ops->xdp_xmit(&local->hw, &sdata->vif, n, frames, flags);
+}
+
+static int ieee80211_ndo_xsk_wakeup(struct net_device *dev, u32 queue_id,
+				    u32 flags)
+{
+	struct ieee80211_sub_if_data *sdata = IEEE80211_DEV_TO_SUB_IF(dev);
+	struct ieee80211_local *local = sdata->local;
+
+	if (!local->ops->xsk_wakeup)
+		return -EOPNOTSUPP;
+
+	return local->ops->xsk_wakeup(&local->hw, &sdata->vif, queue_id, flags);
+}
+
 static const struct net_device_ops ieee80211_dataif_ops = {
 	.ndo_open		= ieee80211_open,
 	.ndo_stop		= ieee80211_stop,
@@ -897,6 +929,9 @@ static const struct net_device_ops ieee80211_dataif_ops = {
 	.ndo_set_rx_mode	= ieee80211_set_multicast_list,
 	.ndo_set_mac_address 	= ieee80211_change_mac,
 	.ndo_setup_tc		= ieee80211_netdev_setup_tc,
+	.ndo_bpf		= ieee80211_ndo_bpf,
+	.ndo_xdp_xmit		= ieee80211_ndo_xdp_xmit,
+	.ndo_xsk_wakeup		= ieee80211_ndo_xsk_wakeup,
 };
 
 static u16 ieee80211_monitor_select_queue(struct net_device *dev,
@@ -1388,6 +1423,13 @@ int ieee80211_do_open(struct wireless_dev *wdev, bool coming_up)
 		} else {
 			netif_carrier_off(dev);
 		}
+		struct ieee80211_sub_if_data *master;
+
+		master = container_of(sdata->bss,
+				    struct ieee80211_sub_if_data, u.ap);
+
+		memcpy(sdata->vif.drv_priv, master->vif.drv_priv,
+		       local->hw.vif_data_size);
 		break;
 	case NL80211_IFTYPE_MONITOR:
 		if ((sdata->u.mntr.flags & MONITOR_FLAG_ACTIVE) ||

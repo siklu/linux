@@ -13583,6 +13583,9 @@ static const struct ieee80211_ops ath12k_ops = {
 #ifdef CONFIG_ATH12K_DEBUGFS
 	.link_sta_add_debugfs           = ath12k_debugfs_link_sta_op_add,
 #endif
+	.xdp_op				= ath12k_xdp_op,
+	.xdp_xmit			= ath12k_xdp_xmit,
+	.xsk_wakeup			= ath12k_xsk_wakeup,
 };
 
 void ath12k_mac_update_freq_range(struct ath12k *ar,

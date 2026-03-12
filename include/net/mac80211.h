@@ -4904,6 +4904,12 @@ struct ieee80211_ops {
 			struct ieee80211_neg_ttlm *ttlm);
 	void (*prep_add_interface)(struct ieee80211_hw *hw,
 				   enum nl80211_iftype type);
+	int (*xdp_op)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		      struct netdev_bpf *bpf);
+	int (*xdp_xmit)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			int n, struct xdp_frame **frames, u32 flags);
+	int (*xsk_wakeup)(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+			  u32 queue_id, u32 flags);
 };
 
 /**

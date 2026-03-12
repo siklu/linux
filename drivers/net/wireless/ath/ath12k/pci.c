@@ -4,6 +4,8 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
+#include "linux/netdev.h"
+#include "linux/netdevice.h"
 #include <linux/module.h>
 #include <linux/msi.h>
 #include <linux/pci.h>
@@ -548,10 +550,12 @@ static int ath12k_pci_ext_grp_napi_poll(struct napi_struct *napi, int budget)
 	int i;
 
 	work_done = ath12k_dp_service_srng(ab, irq_grp, budget);
-	if (work_done < budget) {
+	if (work_done < budget && budget != 0) {
 		napi_complete_done(napi, work_done);
+#ifndef ATH12k_ENABLE_WAKEUP
 		for (i = 0; i < irq_grp->num_irq; i++)
-			enable_irq(irq_grp->ab->irq_num[irq_grp->irqs[i]]);
+				enable_irq(irq_grp->ab->irq_num[irq_grp->irqs[i]]);
+#endif
 	}
 
 	if (work_done > budget)
@@ -573,11 +577,13 @@ static irqreturn_t ath12k_pci_ext_interrupt_handler(int irq, void *arg)
 
 	/* last interrupt received for this group */
 	irq_grp->timestamp = jiffies;
-
+#ifndef ATH12k_ENABLE_WAKEUP
 	for (i = 0; i < irq_grp->num_irq; i++)
 		disable_irq_nosync(irq_grp->ab->irq_num[irq_grp->irqs[i]]);
+#endif
+	napi_schedule_irqoff(&irq_grp->napi);
 
-	napi_schedule(&irq_grp->napi);
+	//napi_schedule(&irq_grp->napi);
 
 	return IRQ_HANDLED;
 }
@@ -608,6 +614,8 @@ static int ath12k_pci_ext_irq_config(struct ath12k_base *ab)
 			ret = -ENOMEM;
 			goto fail_allocate;
 		}
+
+		//netif_threaded_enable(irq_grp->napi_ndev);
 
 		netif_napi_add(irq_grp->napi_ndev, &irq_grp->napi,
 			       ath12k_pci_ext_grp_napi_poll);

@@ -5,6 +5,7 @@
  */
 
 #include <crypto/hash.h>
+#include <net/xdp_sock_drv.h>
 #include "core.h"
 #include "dp_tx.h"
 #include "hal_tx.h"
@@ -898,6 +899,13 @@ int ath12k_dp_service_srng(struct ath12k_base *ab,
 	if (ab->hw_params->ring_mask->tx[grp_id]) {
 		i = fls(ab->hw_params->ring_mask->tx[grp_id]) - 1;
 		ath12k_dp_tx_completion_handler(ab, i);
+#if 1
+		work_done = ath12k_dp_xsk_tx(ab, budget);
+		budget -= work_done;
+		tot_work_done += work_done;
+		if (budget <= 0)
+			goto done;
+#endif
 	}
 
 	if (ab->hw_params->ring_mask->rx_err[grp_id]) {
@@ -928,7 +936,7 @@ int ath12k_dp_service_srng(struct ath12k_base *ab,
 		if (budget <= 0)
 			goto done;
 	}
-
+#if 0
 	if (ab->hw_params->ring_mask->rx_mon_status[grp_id]) {
 		ring_mask = ab->hw_params->ring_mask->rx_mon_status[grp_id];
 		for (i = 0; i < ab->num_radios; i++) {
@@ -989,7 +997,7 @@ int ath12k_dp_service_srng(struct ath12k_base *ab,
 			}
 		}
 	}
-
+#endif
 	if (ab->hw_params->ring_mask->reo_status[grp_id])
 		ath12k_dp_rx_process_reo_status(ab);
 
@@ -1176,15 +1184,15 @@ static void ath12k_dp_cc_cleanup(struct ath12k_base *ab)
 					continue;
 				}
 
-				skb = desc_info[j].skb;
-				if (!skb)
-					continue;
+				if (desc_info[j].is_xsk) {
+					if (desc_info[j].xdp)
+						xsk_buff_free(desc_info[j].xdp);
+				} else {
+					if (desc_info[j].skb) {
 
-				dma_unmap_single(ab->dev,
-						 ATH12K_SKB_RXCB(skb)->paddr,
-						 skb->len + skb_tailroom(skb),
-						 DMA_FROM_DEVICE);
-				dev_kfree_skb_any(skb);
+						dev_kfree_skb_any(desc_info[j].skb);
+					}
+				}
 			}
 
 			kfree(dp->rxbaddr[i]);
@@ -1205,7 +1213,7 @@ static void ath12k_dp_cc_cleanup(struct ath12k_base *ab)
 					 &dp->tx_desc_used_list[i], list) {
 			list_del(&tx_desc_info->list);
 			skb = tx_desc_info->skb;
-
+			// FIXME: tx descriptor handling of xdp.
 			if (!skb)
 				continue;
 

@@ -10,6 +10,8 @@
 #include "hal_desc.h"
 #include "hal_rx.h"
 #include "hw.h"
+#include <net/page_pool/types.h>
+#include <net/xdp.h>
 
 #define MAX_RXDMA_PER_PDEV     2
 
@@ -44,6 +46,8 @@ struct dp_rxdma_mon_ring {
 struct dp_rxdma_ring {
 	struct dp_srng refill_buf_ring;
 	int bufs_max;
+	struct page_pool *page_pool;
+	struct xdp_rxq_info xdp_rxq;
 };
 
 #define ATH12K_TX_COMPL_NEXT(ab, x)	(((x) + 1) % DP_TX_COMP_RING_SIZE(ab))
@@ -314,21 +318,27 @@ struct ath12k_hp_update_timer {
 
 struct ath12k_rx_desc_info {
 	struct list_head list;
-	struct sk_buff *skb;
+	union {
+		struct sk_buff *skb;
+		struct xdp_buff *xdp;
+	};
 	u32 cookie;
 	u32 magic;
 	u8 in_use	: 1,
+	   is_xsk	: 1,
 	   device_id	: 3,
-	   reserved	: 4;
+	   reserved	: 3;
 };
 
 struct ath12k_tx_desc_info {
 	struct list_head list;
 	struct sk_buff *skb;
 	struct sk_buff *skb_ext_desc;
+	struct xdp_frame *xdpf;
 	u32 desc_id; /* Cookie */
 	u8 mac_id;
 	u8 pool_id;
+	bool is_xsk;
 };
 
 struct ath12k_tx_desc_params {
@@ -1971,6 +1981,21 @@ struct ath12k_rx_desc_info *ath12k_dp_get_rx_desc(struct ath12k_base *ab,
 						  u32 cookie);
 struct ath12k_tx_desc_info *ath12k_dp_get_tx_desc(struct ath12k_base *ab,
 						  u32 desc_id);
+void ath12k_dp_tx_release_txbuf(struct ath12k_dp *dp,
+				struct ath12k_tx_desc_info *tx_desc,
+				u8 pool_id);
+struct ath12k_tx_desc_info *ath12k_dp_tx_assign_buffer(struct ath12k_dp *dp,
+						       u8 pool_id);
 bool ath12k_dp_wmask_compaction_rx_tlv_supported(struct ath12k_base *ab);
 void ath12k_dp_hal_rx_desc_init(struct ath12k_base *ab);
+
+int ath12k_xdp_op(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		  struct netdev_bpf *bpf);
+int ath12k_xdp_xmit(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		    int n, struct xdp_frame **frames, u32 flags);
+int ath12k_xsk_wakeup(struct ieee80211_hw *hw, struct ieee80211_vif *vif,
+		      u32 queue_id, u32 flags);
+int ath12k_dp_xsk_tx(struct ath12k_base *ab, int budget);
+void ath12k_dp_xsk_completed(int count);
+
 #endif

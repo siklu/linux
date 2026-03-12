@@ -9,8 +9,24 @@
 #include "debug.h"
 #include "debugfs.h"
 #include "hw.h"
+#include "linux/printk.h"
 #include "peer.h"
 #include "mac.h"
+#include <net/xdp.h>
+#include <linux/if_ether.h>
+#include <net/xdp.h>
+#include <linux/if_ether.h>
+
+static void ath12k_dbg_print_hal_tx_info(const struct hal_tx_info *ti)
+{
+	pr_err("hal_tx_info: meta_data_flags=0x%x ring_id=%u rbm_id=%u desc_id=%u type=%u encap_type=%u paddr=0x%llx data_len=%u pkt_offset=%u encrypt_type=%u flags0=0x%x flags1=0x%x addr_search_flags=0x%x bss_ast_hash=0x%x bss_ast_idx=0x%x tid=%u search_type=%u lmac_id=%u vdev_id=%u dscp_tid_tbl_idx=%u enable_mesh=%d bank_id=%d\n",
+	       ti->meta_data_flags, ti->ring_id, ti->rbm_id, ti->desc_id,
+	       ti->type, ti->encap_type, (unsigned long long)ti->paddr,
+	       ti->data_len, ti->pkt_offset, ti->encrypt_type, ti->flags0,
+	       ti->flags1, ti->addr_search_flags, ti->bss_ast_hash,
+	       ti->bss_ast_idx, ti->tid, ti->search_type, ti->lmac_id,
+	       ti->vdev_id, ti->dscp_tid_tbl_idx, ti->enable_mesh, ti->bank_id);
+}
 
 static enum hal_tcl_encap_type
 ath12k_dp_tx_get_encap_type(struct ath12k_base *ab, struct sk_buff *skb)
@@ -78,7 +94,7 @@ enum hal_encrypt_type ath12k_dp_tx_get_encrypt_type(u32 cipher)
 	}
 }
 
-static void ath12k_dp_tx_release_txbuf(struct ath12k_dp *dp,
+void ath12k_dp_tx_release_txbuf(struct ath12k_dp *dp,
 				       struct ath12k_tx_desc_info *tx_desc,
 				       u8 pool_id)
 {
@@ -88,7 +104,7 @@ static void ath12k_dp_tx_release_txbuf(struct ath12k_dp *dp,
 	spin_unlock_bh(&dp->tx_desc_lock[pool_id]);
 }
 
-static struct ath12k_tx_desc_info *ath12k_dp_tx_assign_buffer(struct ath12k_dp *dp,
+struct ath12k_tx_desc_info *ath12k_dp_tx_assign_buffer(struct ath12k_dp *dp,
 							      u8 pool_id)
 {
 	struct ath12k_tx_desc_info *desc;
@@ -467,7 +483,16 @@ skip_htt_meta:
 
 	hal_ring_id = tx_ring->tcl_data_ring.ring_id;
 	tcl_ring = &ab->hal.srng_list[hal_ring_id];
+#if 0
 
+	ath12k_dbg_print_hal_tx_info(&ti);
+	pr_err("TX: skb %p len %u ring %u pool %u desc_id %u paddr 0x%llx ext_desc %d ext_paddr 0x%llx encap_type %u encrypt_type %u tid %u vif_id %u add_htt_metadata %d\n",
+	       skb, skb->len, ti.ring_id, pool_id, ti.desc_id,
+	       (unsigned long long)ti.paddr,
+	       msdu_ext_desc ? 1 : 0,
+	       msdu_ext_desc ? (unsigned long long)ti.paddr : 0,
+	       ti.encap_type, ti.encrypt_type, ti.tid, ti.vdev_id, add_htt_metadata);
+#endif
 	spin_lock_bh(&tcl_ring->lock);
 
 	ath12k_hal_srng_access_begin(ab, tcl_ring);
@@ -507,6 +532,32 @@ skip_htt_meta:
 		arvif->link_stats.tx_enqueued++;
 	spin_unlock_bh(&arvif->link_stats_lock);
 
+	// print fully ti ti:
+	/* struct hal_tx_info {
+	u16 meta_data_flags; 
+	u8 ring_id;
+	u8 rbm_id;
+	u32 desc_id;
+	enum hal_tcl_desc_type type;
+	enum hal_tcl_encap_type encap_type;
+	dma_addr_t paddr;
+	u32 data_len;
+	u32 pkt_offset;
+	enum hal_encrypt_type encrypt_type;
+	u32 flags0; 
+	u32 flags1;
+	u16 addr_search_flags;
+	u16 bss_ast_hash;
+	u16 bss_ast_idx;
+	u8 tid;
+	u8 search_type; 
+	u8 lmac_id;
+	u8 vdev_id;
+	u8 dscp_tid_tbl_idx;
+	bool enable_mesh;
+	int bank_id;
+};*/
+
 	ab->device_stats.tx_enqueued[ti.ring_id]++;
 
 	ath12k_hal_tx_cmd_desc_setup(ab, hal_tcl_desc, &ti);
@@ -514,10 +565,13 @@ skip_htt_meta:
 	ath12k_hal_srng_access_end(ab, tcl_ring);
 
 	spin_unlock_bh(&tcl_ring->lock);
+#if 0
+	ath12k_dbg_dump(ab, ATH12K_DBG_DP_TX, NULL, "dp tx msdu: ", skb->data,
+			skb->len);
 
-	ath12k_dbg_dump(ab, ATH12K_DBG_DP_TX, NULL, "dp tx msdu: ",
-			skb->data, skb->len);
-
+	print_hex_dump(KERN_ERR, "ath12k dp_tx skb: ", DUMP_PREFIX_OFFSET,
+		       16, 1, skb->data, skb->len, true);
+#endif
 	atomic_inc(&ar->dp.num_tx_pending);
 
 	return 0;
@@ -1018,6 +1072,7 @@ void ath12k_dp_tx_completion_handler(struct ath12k_base *ab, int ring_id)
 		desc_params.mac_id = tx_desc->mac_id;
 		desc_params.skb = tx_desc->skb;
 		desc_params.skb_ext_desc = tx_desc->skb_ext_desc;
+		bool is_xsk = tx_desc->is_xsk;
 
 		/* Find the HAL_WBM_RELEASE_INFO0_REL_SRC_MODULE value */
 		buf_rel_source = le32_get_bits(tx_status->info0,
@@ -1028,19 +1083,30 @@ void ath12k_dp_tx_completion_handler(struct ath12k_base *ab, int ring_id)
 					   HAL_WBM_COMPL_TX_INFO0_TQM_RELEASE_REASON);
 		ab->device_stats.tqm_rel_reason[rel_status]++;
 
+		if (is_xsk) {
+			// FIXME: no way to clear specific buffers.
+			// buffers might be completed out-of-order!
+			ath12k_dp_xsk_completed(1);
+		}
+
 		/* Release descriptor as soon as extracting necessary info
 		 * to reduce contention
 		 */
 		ath12k_dp_tx_release_txbuf(dp, tx_desc, tx_desc->pool_id);
-		if (ts.buf_rel_source == HAL_WBM_REL_SRC_MODULE_FW) {
+		if (ts.buf_rel_source == HAL_WBM_REL_SRC_MODULE_FW && !is_xsk) {
 			ath12k_dp_tx_process_htt_tx_complete(ab, (void *)tx_status,
 							     tx_ring, &desc_params);
+			continue;
+		}
+
+		if (is_xsk) {
 			continue;
 		}
 
 		pdev_id = ath12k_hw_mac_id_to_pdev_id(ab->hw_params, desc_params.mac_id);
 		ar = ab->pdevs[pdev_id].ar;
 
+		// TODO: move up?
 		if (atomic_dec_and_test(&ar->dp.num_tx_pending))
 			wake_up(&ar->dp.tx_empty_waitq);
 
@@ -1729,4 +1795,11 @@ int ath12k_dp_tx_htt_tx_filter_setup(struct ath12k_base *ab, u32 ring_id,
 err_free:
 	dev_kfree_skb_any(skb);
 	return ret;
+}
+
+int ath12k_xdp_xmit(struct ieee80211_hw *hw, struct ieee80211_vif *vif, int n,
+		    struct xdp_frame **frames, u32 flags)
+{
+	pr_err_once("ath12k_xdp_xmit is not supported\n");
+	return -EOPNOTSUPP;
 }

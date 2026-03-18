@@ -614,6 +614,21 @@ static unsigned int sff_gpio_get_state(struct sfp *sfp)
 	return sfp_gpio_get_state(sfp) | SFP_F_PRESENT;
 }
 
+/* Detect module presence via I2C when MODDEF0 GPIO is not available.
+ * Probes the SFP EEPROM at I2C address 0x50 to determine if a module
+ * is inserted.
+ */
+static unsigned int sfp_i2c_get_state(struct sfp *sfp)
+{
+	unsigned int state = sfp_gpio_get_state(sfp);
+	u8 val;
+
+	if (sfp->read(sfp, false, 0, &val, sizeof(val)) == sizeof(val))
+		state |= SFP_F_PRESENT;
+
+	return state;
+}
+
 /**
  * simulate_pull_up - simulate a pull-up on a GPIO
  * @desc: GPIO descriptor
@@ -793,6 +808,8 @@ static int sfp_i2c_configure(struct sfp *sfp, struct i2c_adapter *i2c)
 		sfp->i2c = NULL;
 		return -EINVAL;
 	}
+
+	sfp->i2c_block_size = sfp->i2c_max_block_size;
 
 	return 0;
 }
@@ -3130,9 +3147,13 @@ static int sfp_probe(struct platform_device *pdev)
 	sfp->get_state = sfp_gpio_get_state;
 	sfp->set_state = sfp_gpio_set_state;
 
-	/* Modules that have no detect signal are always present */
-	if (!(sfp->gpio[GPIO_MODDEF0]))
-		sfp->get_state = sff_gpio_get_state;
+	/* Modules that have no detect signal use I2C probing for presence
+	 * detection, which allows hotplug to work without a MODDEF0 GPIO.
+	 */
+	if (!(sfp->gpio[GPIO_MODDEF0])) {
+		sfp->get_state = sfp_i2c_get_state;
+		sfp->need_poll = true;
+	}
 
 	device_property_read_u32(&pdev->dev, "maximum-power-milliwatt",
 				 &sfp->max_power_mW);

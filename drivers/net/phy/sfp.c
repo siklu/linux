@@ -593,6 +593,8 @@ static const struct sfp_quirk *sfp_lookup_quirk(const struct sfp_eeprom_id *id)
 	return NULL;
 }
 
+static int sfp_read(struct sfp *sfp, bool a2, u8 addr, void *buf, size_t len);
+
 static unsigned int sfp_gpio_get_state(struct sfp *sfp)
 {
 	unsigned int i, state, v;
@@ -616,15 +618,26 @@ static unsigned int sff_gpio_get_state(struct sfp *sfp)
 
 /* Detect module presence via I2C when MODDEF0 GPIO is not available.
  * Probes the SFP EEPROM at I2C address 0x50 to determine if a module
- * is inserted.
+ * is inserted. Retries on transient I2C errors to avoid false removal
+ * events, but exits immediately on NACK (-ENXIO) which means no module.
  */
 static unsigned int sfp_i2c_get_state(struct sfp *sfp)
 {
 	unsigned int state = sfp_gpio_get_state(sfp);
+	int retries = 3;
 	u8 val;
+	int ret;
 
-	if (sfp->read(sfp, false, 0, &val, sizeof(val)) == sizeof(val))
-		state |= SFP_F_PRESENT;
+	while (retries--) {
+		ret = sfp_read(sfp, false, 0, &val, sizeof(val));
+		if (ret == sizeof(val)) {
+			state |= SFP_F_PRESENT;
+			break;
+		}
+		/* NACK means no device present, no point retrying */
+		if (ret == -ENXIO)
+			break;
+	}
 
 	return state;
 }

@@ -248,6 +248,7 @@ struct sfp {
 	int gpio_irq[GPIO_MAX];
 
 	bool need_poll;
+	unsigned int i2c_detect_retries;
 
 	/* Access rules:
 	 * state_hw_drive: st_mutex held
@@ -616,27 +617,26 @@ static unsigned int sff_gpio_get_state(struct sfp *sfp)
 	return sfp_gpio_get_state(sfp) | SFP_F_PRESENT;
 }
 
+#define N_I2C_DETECT_RETRIES	3
+
 /* Detect module presence via I2C when MODDEF0 GPIO is not available.
- * Probes the SFP EEPROM at I2C address 0x50 to determine if a module
- * is inserted. Retries on transient I2C errors to avoid false removal
- * events, but exits immediately on NACK (-ENXIO) which means no module.
+ * Performs a single I2C read per poll (every 100ms) and uses a debounce
+ * counter across consecutive polls: the module is reported as removed
+ * only after N_I2C_DETECT_RETRIES consecutive failures. A single
+ * successful read resets the counter and confirms presence.
  */
 static unsigned int sfp_i2c_get_state(struct sfp *sfp)
 {
 	unsigned int state = sfp_gpio_get_state(sfp);
-	int retries = 3;
 	u8 val;
-	int ret;
 
-	while (retries--) {
-		ret = sfp_read(sfp, false, 0, &val, sizeof(val));
-		if (ret == sizeof(val)) {
-			state |= SFP_F_PRESENT;
-			break;
-		}
-		/* NACK means no device present, no point retrying */
-		if (ret == -ENXIO)
-			break;
+	if (sfp_read(sfp, false, 0, &val, sizeof(val)) == sizeof(val)) {
+		sfp->i2c_detect_retries = N_I2C_DETECT_RETRIES;
+		state |= SFP_F_PRESENT;
+	} else if (sfp->i2c_detect_retries) {
+		/* Not yet exhausted retries, keep reporting present */
+		sfp->i2c_detect_retries--;
+		state |= SFP_F_PRESENT;
 	}
 
 	return state;

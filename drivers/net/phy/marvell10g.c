@@ -1107,6 +1107,16 @@ static int mv3310_get_features(struct phy_device *phydev)
 				 val & MDIO_PMA_NG_EXTABLE_5GBT);
 	}
 
+	/* C45 PHYs do not support half duplex in forced mode
+	 * (genphy_c45_pma_setup_forced rejects it), so clear half-duplex
+	 * link modes to prevent userspace from requesting an unsupported
+	 * configuration that would send the PHY into an error state.
+	 */
+	linkmode_clear_bit(ETHTOOL_LINK_MODE_100baseT_Half_BIT,
+			   phydev->supported);
+	linkmode_clear_bit(ETHTOOL_LINK_MODE_10baseT_Half_BIT,
+			   phydev->supported);
+
 	return 0;
 }
 

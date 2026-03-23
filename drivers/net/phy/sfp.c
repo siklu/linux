@@ -248,6 +248,7 @@ struct sfp {
 	int gpio_irq[GPIO_MAX];
 
 	bool need_poll;
+	unsigned int i2c_detect_retries;
 
 	/* Access rules:
 	 * state_hw_drive: st_mutex held
@@ -593,12 +594,12 @@ static const struct sfp_quirk *sfp_lookup_quirk(const struct sfp_eeprom_id *id)
 	return NULL;
 }
 
+static int sfp_read(struct sfp *sfp, bool a2, u8 addr, void *buf, size_t len);
+
 static unsigned int sfp_gpio_get_state(struct sfp *sfp)
 {
 	unsigned int i, state, v;
-	int repeat = 10;
 
-again:
 	for (i = state = 0; i < GPIO_MAX; i++) {
 		if (gpio_flags[i] != GPIOD_IN || !sfp->gpio[i])
 			continue;
@@ -608,21 +609,37 @@ again:
 			state |= BIT(i);
 	}
 
-	/* Trivial debounce. When no state change is detected, wait for up to
-	 * a limited bound time interval for the signal state to settle.
-	 */
-	if (state == sfp->state && repeat > 0) {
-		udelay(10);
-		repeat--;
-		goto again;
-	}
-
 	return state;
 }
 
 static unsigned int sff_gpio_get_state(struct sfp *sfp)
 {
 	return sfp_gpio_get_state(sfp) | SFP_F_PRESENT;
+}
+
+#define N_I2C_DETECT_RETRIES	3
+
+/* Detect module presence via I2C when MODDEF0 GPIO is not available.
+ * Performs a single I2C read per poll (every 100ms) and uses a debounce
+ * counter across consecutive polls: the module is reported as removed
+ * only after N_I2C_DETECT_RETRIES consecutive failures. A single
+ * successful read resets the counter and confirms presence.
+ */
+static unsigned int sfp_i2c_get_state(struct sfp *sfp)
+{
+	unsigned int state = sfp_gpio_get_state(sfp);
+	u8 val;
+
+	if (sfp_read(sfp, false, 0, &val, sizeof(val)) == sizeof(val)) {
+		sfp->i2c_detect_retries = N_I2C_DETECT_RETRIES;
+		state |= SFP_F_PRESENT;
+	} else if (sfp->i2c_detect_retries) {
+		/* Not yet exhausted retries, keep reporting present */
+		sfp->i2c_detect_retries--;
+		state |= SFP_F_PRESENT;
+	}
+
+	return state;
 }
 
 /**
@@ -804,6 +821,8 @@ static int sfp_i2c_configure(struct sfp *sfp, struct i2c_adapter *i2c)
 		sfp->i2c = NULL;
 		return -EINVAL;
 	}
+
+	sfp->i2c_block_size = sfp->i2c_max_block_size;
 
 	return 0;
 }
@@ -3141,9 +3160,13 @@ static int sfp_probe(struct platform_device *pdev)
 	sfp->get_state = sfp_gpio_get_state;
 	sfp->set_state = sfp_gpio_set_state;
 
-	/* Modules that have no detect signal are always present */
-	if (!(sfp->gpio[GPIO_MODDEF0]))
-		sfp->get_state = sff_gpio_get_state;
+	/* Modules that have no detect signal use I2C probing for presence
+	 * detection, which allows hotplug to work without a MODDEF0 GPIO.
+	 */
+	if (!(sfp->gpio[GPIO_MODDEF0])) {
+		sfp->get_state = sfp_i2c_get_state;
+		sfp->need_poll = true;
+	}
 
 	device_property_read_u32(&pdev->dev, "maximum-power-milliwatt",
 				 &sfp->max_power_mW);

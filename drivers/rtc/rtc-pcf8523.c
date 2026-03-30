@@ -22,6 +22,7 @@
 
 #define PCF8523_REG_CONTROL3 0x02
 #define PCF8523_CONTROL3_PM  GENMASK(7, 5)
+#define PCF8523_PM_STANDARD  0x4
 #define PCF8523_PM_STANDBY   0x7
 #define PCF8523_CONTROL3_BLF BIT(2) /* battery low bit, read-only */
 #define PCF8523_CONTROL3_BSF BIT(3)
@@ -46,6 +47,8 @@
 #define PCF8523_OFFSET_MODE BIT(7)
 
 #define PCF8523_TMR_CLKOUT_CTRL 0x0f
+#define PCF8523_TMR_CLKOUT_COF	GENMASK(5, 3)
+#define PCF8523_COF_DISABLED	0x7
 
 struct pcf8523 {
 	struct rtc_device *rtc;
@@ -480,7 +483,8 @@ static int pcf8523_probe(struct i2c_client *client)
 	clear_bit(RTC_FEATURE_UPDATE_INTERRUPT, rtc->features);
 
 	/* disable CLKOUT */
-	err = regmap_write(pcf8523->regmap, PCF8523_TMR_CLKOUT_CTRL, 0x38);
+	err = regmap_write(pcf8523->regmap, PCF8523_TMR_CLKOUT_CTRL,
+			   FIELD_PREP(PCF8523_TMR_CLKOUT_COF, PCF8523_COF_DISABLED));
 	if (err < 0)
 		return err;
 
@@ -489,7 +493,7 @@ static int pcf8523_probe(struct i2c_client *client)
 	 */
 	err = regmap_update_bits(pcf8523->regmap, PCF8523_REG_CONTROL3,
 				 PCF8523_CONTROL3_PM,
-				 FIELD_PREP(PCF8523_CONTROL3_PM, 0x4));
+				 FIELD_PREP(PCF8523_CONTROL3_PM, PCF8523_PM_STANDARD));
 	if (err < 0)
 		return err;
 

@@ -7753,7 +7753,18 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			if (old_state == IEEE80211_STA_NOTEXIST &&
 			    new_state == IEEE80211_STA_NONE)
 				goto peer_delete;
-			else
+			else if (old_state == IEEE80211_STA_NONE &&
+				 new_state == IEEE80211_STA_NOTEXIST) {
+				/* Teardown must not fail from mac80211's
+				 * perspective. Clean up the ath12k_dp_peer
+				 * that won't be reached by the normal success
+				 * path, and tell mac80211 we succeeded.
+				 */
+				ath12k_dp_peer_delete(&ah->dp_hw,
+						      sta->addr, sta);
+				ret = 0;
+				goto exit;
+			} else
 				goto exit;
 		}
 	}

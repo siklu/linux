@@ -18,9 +18,6 @@
 #define OTP_VALID_DUALMAC_BOARD_ID_MASK		0x1000
 #define MHI_CB_INVALID	0xff
 
-/* Force dual-mac firmware loading (from core.c module parameter) */
-extern bool ath12k_force_dualmac;
-
 void ath12k_mhi_set_mhictrl_reset(struct ath12k_base *ab)
 {
 	u32 val;
@@ -83,7 +80,7 @@ static int ath12k_mhi_get_msi(struct ath12k_pci *ab_pci)
 	ath12k_dbg(ab, ATH12K_DBG_PCI, "Number of assigned MSI for MHI is %d, base vector is %d\n",
 		   num_vectors, base_vector);
 
-	irq = kcalloc(num_vectors, sizeof(*irq), GFP_KERNEL);
+	irq = kzalloc_objs(*irq, num_vectors);
 	if (!irq)
 		return -ENOMEM;
 
@@ -206,11 +203,7 @@ int ath12k_mhi_register(struct ath12k_pci *ab_pci)
 	mhi_ctrl->reg_len = ab->mem_len;
 	mhi_ctrl->rddm_size = ab->hw_params->rddm_size;
 
-	/* Check for force_dualmac module parameter first */
-	if (ath12k_force_dualmac) {
-		dualmac = true;
-		ath12k_info(ab, "force_dualmac enabled: loading dual-mac firmware\n");
-	} else if (ab->hw_params->otp_board_id_register) {
+	if (ab->hw_params->otp_board_id_register) {
 		board_id =
 			ath12k_pci_read32(ab, ab->hw_params->otp_board_id_register);
 		board_id = u32_get_bits(board_id, OTP_BOARD_ID_MASK);

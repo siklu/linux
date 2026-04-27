@@ -4010,8 +4010,6 @@ struct wmi_stop_scan_cmd {
 	__le32 pdev_id;
 } __packed;
 
-#define WMI_MAX_NUM_CHAN_PER_WMI_CMD	58
-
 struct ath12k_wmi_scan_chan_list_arg {
 	struct list_head list;
 	u32 pdev_id;
@@ -4195,7 +4193,6 @@ struct wmi_addba_clear_resp_cmd {
 	struct ath12k_wmi_mac_addr_params peer_macaddr;
 } __packed;
 
-#define DFS_PHYERR_UNIT_TEST_CMD 0
 #define DFS_UNIT_TEST_MODULE	0x2b
 #define DFS_UNIT_TEST_TOKEN	0xAA
 
@@ -4206,10 +4203,15 @@ enum dfs_test_args_idx {
 	DFS_MAX_TEST_ARGS,
 };
 
-struct wmi_dfs_unit_test_arg {
-	u32 cmd_id;
-	u32 pdev_id;
-	u32 radar_param;
+/* update if another test command requires more */
+#define WMI_UNIT_TEST_ARGS_MAX DFS_MAX_TEST_ARGS
+
+struct wmi_unit_test_arg {
+	u32 vdev_id;
+	u32 module_id;
+	u32 diag_token;
+	u32 num_args;
+	u32 args[WMI_UNIT_TEST_ARGS_MAX];
 };
 
 struct wmi_unit_test_cmd {

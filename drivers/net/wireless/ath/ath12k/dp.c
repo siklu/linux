@@ -4,7 +4,6 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
-#include <crypto/hash.h>
 #include "core.h"
 #include "dp_tx.h"
 #include "hif.h"
@@ -41,7 +40,6 @@ void ath12k_dp_peer_cleanup(struct ath12k *ar, int vdev_id, const u8 *addr)
 	}
 
 	ath12k_dp_rx_peer_tid_cleanup(ar, peer);
-	crypto_free_shash(peer->dp_peer->tfm_mmic);
 	peer->dp_peer->dp_setup_done = false;
 	spin_unlock_bh(&dp->dp_lock);
 }
@@ -407,9 +405,8 @@ static int ath12k_dp_init_bank_profiles(struct ath12k_base *ab)
 	int i;
 
 	dp->num_bank_profiles = num_tcl_banks;
-	dp->bank_profiles = kmalloc_array(num_tcl_banks,
-					  sizeof(struct ath12k_dp_tx_bank_profile),
-					  GFP_KERNEL);
+	dp->bank_profiles = kmalloc_objs(struct ath12k_dp_tx_bank_profile,
+					 num_tcl_banks);
 	if (!dp->bank_profiles)
 		return -ENOMEM;
 
@@ -1215,8 +1212,8 @@ static int ath12k_dp_cc_desc_init(struct ath12k_base *ab)
 
 	spin_lock_bh(&dp->rx_desc_lock);
 
-	dp->rxbaddr = kcalloc(num_rx_spt_pages,
-			      sizeof(struct ath12k_rx_desc_info *), GFP_ATOMIC);
+	dp->rxbaddr = kzalloc_objs(struct ath12k_rx_desc_info *,
+				   num_rx_spt_pages, GFP_ATOMIC);
 
 	if (!dp->rxbaddr) {
 		spin_unlock_bh(&dp->rx_desc_lock);
@@ -1227,8 +1224,8 @@ static int ath12k_dp_cc_desc_init(struct ath12k_base *ab)
 	 * RX
 	 */
 	for (i = 0; i < num_rx_spt_pages; i++) {
-		rx_descs = kcalloc(ATH12K_MAX_SPT_ENTRIES, sizeof(*rx_descs),
-				   GFP_ATOMIC);
+		rx_descs = kzalloc_objs(*rx_descs, ATH12K_MAX_SPT_ENTRIES,
+					GFP_ATOMIC);
 
 		if (!rx_descs) {
 			spin_unlock_bh(&dp->rx_desc_lock);
@@ -1253,8 +1250,8 @@ static int ath12k_dp_cc_desc_init(struct ath12k_base *ab)
 
 	spin_unlock_bh(&dp->rx_desc_lock);
 
-	dp->txbaddr = kcalloc(ATH12K_NUM_TX_SPT_PAGES(ab),
-			      sizeof(struct ath12k_tx_desc_info *), GFP_ATOMIC);
+	dp->txbaddr = kzalloc_objs(struct ath12k_tx_desc_info *,
+				   ATH12K_NUM_TX_SPT_PAGES(ab), GFP_ATOMIC);
 
 	if (!dp->txbaddr)
 		return -ENOMEM;
@@ -1262,8 +1259,9 @@ static int ath12k_dp_cc_desc_init(struct ath12k_base *ab)
 	for (pool_id = 0; pool_id < ATH12K_HW_MAX_QUEUES; pool_id++) {
 		spin_lock_bh(&dp->tx_desc_lock[pool_id]);
 		for (i = 0; i < ATH12K_TX_SPT_PAGES_PER_POOL(ab); i++) {
-			tx_descs = kcalloc(ATH12K_MAX_SPT_ENTRIES, sizeof(*tx_descs),
-					   GFP_ATOMIC);
+			tx_descs = kzalloc_objs(*tx_descs,
+						ATH12K_MAX_SPT_ENTRIES,
+						GFP_ATOMIC);
 
 			if (!tx_descs) {
 				spin_unlock_bh(&dp->tx_desc_lock[pool_id]);
@@ -1362,8 +1360,7 @@ static int ath12k_dp_cc_init(struct ath12k_base *ab)
 	if (dp->num_spt_pages > ATH12K_MAX_PPT_ENTRIES)
 		dp->num_spt_pages = ATH12K_MAX_PPT_ENTRIES;
 
-	dp->spt_info = kcalloc(dp->num_spt_pages, sizeof(struct ath12k_spt_info),
-			       GFP_KERNEL);
+	dp->spt_info = kzalloc_objs(struct ath12k_spt_info, dp->num_spt_pages);
 
 	if (!dp->spt_info) {
 		ath12k_warn(ab, "SPT page allocation failure");

@@ -7760,10 +7760,8 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 				 * that won't be reached by the normal success
 				 * path, and tell mac80211 we succeeded.
 				 */
-				ath12k_dp_peer_delete(&ah->dp_hw,
-						      sta->addr, sta);
 				ret = 0;
-				goto exit;
+				goto peer_delete;
 			} else
 				goto exit;
 		}
@@ -14985,7 +14983,7 @@ int ath12k_mac_register(struct ath12k_hw_group *ag)
 	struct ath12k_hw *ah;
 	int i;
 	int ret;
-
+    printk(KERN_INFO "ath12k: Gadi 27-4 (test)\n");
 	for (i = 0; i < ag->num_hw; i++) {
 		ah = ath12k_ag_to_ah(ag, i);
 

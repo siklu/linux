@@ -7763,7 +7763,7 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 				 * succeeded.
 				 */
 				if (sta->mlo)
-					ath12k_mac_ml_station_remove(hw, vif, sta);
+					ath12k_mac_ml_station_remove(ahvif, ahsta);
 
 				ret = 0;
 				goto peer_delete;

@@ -7756,7 +7756,7 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			if (old_state == IEEE80211_STA_NONE &&
 			    new_state == IEEE80211_STA_NOTEXIST)
 				/* Teardown must not propagate failure to
-				 * mac80211 — returning an error here triggers
+				 * mac80211 -- returning an error here triggers
 				 * a WARNING in __sta_info_destroy_part2 and
 				 * leaves the station state machine stuck.
 				 * The typical failure is a WMI peer-delete

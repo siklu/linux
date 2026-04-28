@@ -7753,8 +7753,11 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			if (old_state == IEEE80211_STA_NOTEXIST &&
 			    new_state == IEEE80211_STA_NONE)
 				goto peer_delete;
-			else 
+			if (old_state == IEEE80211_STA_NONE &&
+			    new_state == IEEE80211_STA_NOTEXIST)
 				goto peer_cleanup;
+
+			goto exit;
 		}
 	}
 

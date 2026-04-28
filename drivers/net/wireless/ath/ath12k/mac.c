@@ -7755,23 +7755,7 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 				goto peer_delete;
 			else if (old_state == IEEE80211_STA_NONE &&
 				 new_state == IEEE80211_STA_NOTEXIST) {
-				/* Teardown must not fail from mac80211's
-				 * perspective. Clean up any MLO-specific
-				 * state that won't be reached by the normal
-				 * success path, then clean up only the
-				 * ath12k_dp_peer and tell mac80211 we
-				 * succeeded. Do not jump to peer_delete
-				 * after ml_station_remove(), because that
-				 * path can later reach ml_peer_id_clear
-				 * after ahsta->ml_peer_id has already been
-				 * invalidated.
-				 */
-				if (sta->mlo)
-					ath12k_mac_ml_station_remove(ahvif, ahsta);
-
-				ath12k_dp_peer_delete(arvif->ar, arsta->addr);
-				ret = 0;
-				goto exit;
+				goto peer_clean;
 			} else
 				goto exit;
 		}
@@ -7795,6 +7779,7 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			prev_ab = ab;
 		}
 	}
+peer_clean:
 	/* IEEE80211_STA_NONE -> IEEE80211_STA_NOTEXIST:
 	 * Remove the station from driver (handle ML sta here since that
 	 * needs special handling. Normal sta will be handled in generic

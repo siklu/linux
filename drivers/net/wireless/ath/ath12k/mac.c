@@ -7753,8 +7753,22 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			if (old_state == IEEE80211_STA_NOTEXIST &&
 			    new_state == IEEE80211_STA_NONE)
 				goto peer_delete;
-			else
-				goto exit;
+			if (old_state == IEEE80211_STA_NONE &&
+			    new_state == IEEE80211_STA_NOTEXIST)
+				/* Teardown must not propagate failure to
+				 * mac80211 -- returning an error here triggers
+				 * a WARNING in __sta_info_destroy_part2 and
+				 * leaves the station state machine stuck.
+				 * The typical failure is a WMI peer-delete
+				 * timeout (FW never sends HTT peer_unmap);
+				 * the peer is already gone from the driver's
+				 * perspective.  Jump to peer_cleanup so that
+				 * ath12k_dp_peer_delete() frees the dp_peer
+				 * and ret is set to 0.
+				 */
+				goto peer_cleanup;
+
+			goto exit;
 		}
 	}
 
@@ -7776,6 +7790,7 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			prev_ab = ab;
 		}
 	}
+peer_cleanup:
 	/* IEEE80211_STA_NONE -> IEEE80211_STA_NOTEXIST:
 	 * Remove the station from driver (handle ML sta here since that
 	 * needs special handling. Normal sta will be handled in generic

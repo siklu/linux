@@ -7753,11 +7753,8 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			if (old_state == IEEE80211_STA_NOTEXIST &&
 			    new_state == IEEE80211_STA_NONE)
 				goto peer_delete;
-			else if (old_state == IEEE80211_STA_NONE &&
-				 new_state == IEEE80211_STA_NOTEXIST) {
-				goto peer_clean;
-			} else
-				goto exit;
+			else 
+				goto peer_cleanup;
 		}
 	}
 
@@ -7779,7 +7776,7 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			prev_ab = ab;
 		}
 	}
-peer_clean:
+peer_cleanup:
 	/* IEEE80211_STA_NONE -> IEEE80211_STA_NOTEXIST:
 	 * Remove the station from driver (handle ML sta here since that
 	 * needs special handling. Normal sta will be handled in generic

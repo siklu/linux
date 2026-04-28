@@ -7756,10 +7756,15 @@ int ath12k_mac_op_sta_state(struct ieee80211_hw *hw,
 			else if (old_state == IEEE80211_STA_NONE &&
 				 new_state == IEEE80211_STA_NOTEXIST) {
 				/* Teardown must not fail from mac80211's
-				 * perspective. Clean up the ath12k_dp_peer
-				 * that won't be reached by the normal success
-				 * path, and tell mac80211 we succeeded.
+				 * perspective. Clean up any MLO-specific
+				 * state that won't be reached by the normal
+				 * success path, then clean up the
+				 * ath12k_dp_peer and tell mac80211 we
+				 * succeeded.
 				 */
+				if (sta->mlo)
+					ath12k_mac_ml_station_remove(hw, vif, sta);
+
 				ret = 0;
 				goto peer_delete;
 			} else

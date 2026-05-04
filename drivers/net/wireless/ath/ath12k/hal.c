@@ -330,6 +330,7 @@ u32 ath12k_hal_srng_dst_get_curr_tp(struct hal_srng *srng)
 {
 	return srng->u.dst_ring.tp;
 }
+EXPORT_SYMBOL(ath12k_hal_srng_dst_get_curr_tp);
 
 void *ath12k_hal_srng_dst_ring_get_and_update_tp(struct hal_srng *srng, u32 *updated_tp)
 {
@@ -349,6 +350,7 @@ void *ath12k_hal_srng_dst_ring_get_and_update_tp(struct hal_srng *srng, u32 *upd
 
 	return desc;
 }
+EXPORT_SYMBOL(ath12k_hal_srng_dst_ring_get_and_update_tp);
 
 void *ath12k_hal_srng_dst_get_next_entry(struct ath12k_base *ab,
 					 struct hal_srng *srng)
@@ -521,6 +523,7 @@ void ath12k_hal_srng_update_tp(struct hal_srng *srng, u32 new_tp)
 {
 	srng->u.dst_ring.tp = new_tp;
 }
+EXPORT_SYMBOL(ath12k_hal_srng_update_tp);
 
 void ath12k_hal_srng_access_begin(struct ath12k_base *ab, struct hal_srng *srng)
 {

@@ -338,6 +338,13 @@ struct ath12k_rx_desc_info {
 	u8 in_use	: 1,
 	   device_id	: 3,
 	   reserved	: 4;
+	struct {
+		__le32 info0;
+		__le32 peer_meta_data;
+	} rx_mpdu_info;
+	struct {
+		__le32 info0;
+	} rx_msdu_info;
 };
 
 struct ath12k_tx_desc_info {

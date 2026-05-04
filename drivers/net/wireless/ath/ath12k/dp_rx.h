@@ -84,6 +84,17 @@ struct ath12k_dp_rx_rfc1042_hdr {
 	__be16 snap_type;
 } __packed;
 
+struct ath12k_dp_rx_proc_ctx {
+	int device_id;
+	struct ath12k_dp *dp;
+	struct ath12k_dp *partner_dp;
+	int ring_id;
+	int hw_link_id;
+	struct sk_buff_head *msdu_list;
+	int *num_buffs_reaped;
+	int *total_msdu_reaped;
+};
+
 static inline u32 ath12k_he_gi_to_nl80211_he_gi(u8 sgi)
 {
 	u32 ret = 0;

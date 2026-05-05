@@ -328,6 +328,8 @@ EXPORT_SYMBOL(ath12k_hal_srng_dst_peek);
 
 u32 ath12k_hal_srng_dst_get_curr_tp(struct hal_srng *srng)
 {
+	lockdep_assert_held(&srng->lock);
+
 	return srng->u.dst_ring.tp;
 }
 EXPORT_SYMBOL(ath12k_hal_srng_dst_get_curr_tp);
@@ -521,6 +523,8 @@ void *ath12k_hal_srng_src_get_next_reaped(struct ath12k_base *ab,
 
 void ath12k_hal_srng_update_tp(struct hal_srng *srng, u32 new_tp)
 {
+	lockdep_assert_held(&srng->lock);
+
 	srng->u.dst_ring.tp = new_tp;
 }
 EXPORT_SYMBOL(ath12k_hal_srng_update_tp);

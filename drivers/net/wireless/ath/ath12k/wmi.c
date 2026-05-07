@@ -7443,6 +7443,7 @@ static void ath12k_peer_sta_kickout_event(struct ath12k_base *ab, struct sk_buff
 		   arg.mac_addr, arg.reason, arg.rssi);
 
 	switch (arg.reason) {
+	case WMI_PEER_STA_KICKOUT_REASON_XRETRY:
 	case WMI_PEER_STA_KICKOUT_REASON_INACTIVITY:
 		if (arvif->ahvif->vif->type == NL80211_IFTYPE_STATION) {
 			ath12k_mac_handle_beacon_miss(ar, arvif);

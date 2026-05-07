@@ -15012,7 +15012,7 @@ int ath12k_mac_register(struct ath12k_hw_group *ag)
 	struct ath12k_hw *ah;
 	int i;
 	int ret;
-
+	printk(KERN_INFO "ath12k: Gadi poweroff build loaded (test)\n");
 	for (i = 0; i < ag->num_hw; i++) {
 		ah = ath12k_ag_to_ah(ag, i);
 

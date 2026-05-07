@@ -710,6 +710,31 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 			   le32_to_cpu(desc->buf_va_lo));
 		desc_info = (struct ath12k_rx_desc_info *)((unsigned long)desc_va);
 
+		/* Validate desc_info before any dereference. A NULL or
+		 * invalid desc_va from a stale/corrupt descriptor would
+		 * cause a wild pointer dereference and corrupt DMA state.
+		 */
+		if (unlikely(!desc_info)) {
+			device_id = hw_links[hw_link_id].device_id;
+			partner_dp = ath12k_dp_hw_grp_to_dp(dp_hw_grp, device_id);
+			if (partner_dp) {
+				desc_info = ath12k_dp_get_rx_desc(partner_dp, cookie);
+				if (!desc_info) {
+					ath12k_warn(ab, "Invalid cookie in manual descriptor retrieval: 0x%x\n",
+						    cookie);
+					continue;
+				}
+			} else {
+				continue;
+			}
+		}
+
+		if (unlikely(desc_info->magic != ATH12K_DP_RX_DESC_MAGIC)) {
+			ath12k_warn(ab, "Check HW CC implementation, magic 0x%x cookie 0x%x\n",
+				    desc_info->magic, cookie);
+			continue;
+		}
+
 		device_id = hw_links[hw_link_id].device_id;
 		partner_dp = ath12k_dp_hw_grp_to_dp(dp_hw_grp, device_id);
 		if (unlikely(!partner_dp)) {
@@ -723,19 +748,6 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 
 			continue;
 		}
-
-		/* retry manual desc retrieval */
-		if (!desc_info) {
-			desc_info = ath12k_dp_get_rx_desc(partner_dp, cookie);
-			if (!desc_info) {
-				ath12k_warn(partner_dp->ab, "Invalid cookie in manual descriptor retrieval: 0x%x\n",
-					    cookie);
-				continue;
-			}
-		}
-
-		if (desc_info->magic != ATH12K_DP_RX_DESC_MAGIC)
-			ath12k_warn(ab, "Check HW CC implementation");
 
 		push_reason = le32_get_bits(desc->info0,
 					    HAL_REO_DEST_RING_INFO0_PUSH_REASON);

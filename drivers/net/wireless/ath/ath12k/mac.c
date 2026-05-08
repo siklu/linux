@@ -5377,7 +5377,8 @@ int ath12k_mac_get_fw_stats(struct ath12k *ar,
 
 	time_left = wait_for_completion_timeout(&ar->fw_stats_complete, 1 * HZ);
 	if (!time_left) {
-		ath12k_warn(ab, "time out while waiting for get fw stats\n");
+		ath12k_warn(ab, "time out while waiting for get fw stats (pdev_id %d vdev_id %d stats_id 0x%x)\n",
+			    param->pdev_id, param->vdev_id, param->stats_id);
 		return -ETIMEDOUT;
 	}
 

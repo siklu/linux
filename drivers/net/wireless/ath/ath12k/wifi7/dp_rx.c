@@ -513,7 +513,9 @@ static int ath12k_wifi7_dp_rx_process_msdu(struct ath12k_pdev_dp *dp_pdev,
 
 	ath12k_dp_extract_rx_desc_data(hal, rx_info, rx_desc, lrx_desc);
 	if (!rx_info->msdu_done) {
-		ath12k_warn(dp->ab, "msdu_done bit in msdu_end is not set\n");
+		ath12k_warn(dp->ab, "msdu_done bit in msdu_end is not set, rx_desc first 32 bytes: %*ph\n",
+			    min_t(int, 32, (int)sizeof(*rx_desc)),
+			    rx_desc);
 		ret = -EIO;
 		goto free_out;
 	}
@@ -528,9 +530,10 @@ static int ath12k_wifi7_dp_rx_process_msdu(struct ath12k_pdev_dp *dp_pdev,
 	} else if (!rxcb->is_continuation) {
 		if ((msdu_len + hal_rx_desc_sz) > DP_RX_BUFFER_SIZE) {
 			ret = -EINVAL;
-			ath12k_warn(dp->ab, "invalid msdu len %u\n", msdu_len);
-			ath12k_dbg_dump(dp->ab, ATH12K_DBG_DATA, NULL, "", rx_desc,
-					sizeof(*rx_desc));
+			ath12k_warn(dp->ab, "invalid msdu len %u (desc_sz %u buf_sz %d), rx_desc first 32 bytes: %*ph\n",
+				    msdu_len, hal_rx_desc_sz, DP_RX_BUFFER_SIZE,
+				    min_t(int, 32, (int)sizeof(*rx_desc)),
+				    rx_desc);
 			goto free_out;
 		}
 		skb_put(msdu, hal_rx_desc_sz + l3_pad_bytes + msdu_len);
@@ -1381,9 +1384,10 @@ ath12k_wifi7_dp_process_rx_err_buf(struct ath12k_pdev_dp *dp_pdev,
 
 	msdu_len = rx_info.msdu_len;
 	if ((msdu_len + hal_rx_desc_sz) > DP_RX_BUFFER_SIZE) {
-		ath12k_warn(dp->ab, "invalid msdu leng %u", msdu_len);
-		ath12k_dbg_dump(dp->ab, ATH12K_DBG_DATA, NULL, "", rx_desc,
-				sizeof(*rx_desc));
+		ath12k_warn(dp->ab, "invalid msdu leng %u (desc_sz %u buf_sz %d), rx_desc first 32 bytes: %*ph\n",
+			    msdu_len, hal_rx_desc_sz, DP_RX_BUFFER_SIZE,
+			    min_t(int, 32, (int)sizeof(*rx_desc)),
+			    rx_desc);
 		dev_kfree_skb_any(msdu);
 		goto exit;
 	}
@@ -1663,7 +1667,9 @@ static int ath12k_wifi7_dp_rx_h_null_q_desc(struct ath12k_pdev_dp *dp_pdev,
 
 	if (!rx_info->msdu_done) {
 		ath12k_warn(ab,
-			    "msdu_done bit not set in null_q_des processing\n");
+			    "msdu_done bit not set in null_q_des processing, rx_desc first 32 bytes: %*ph\n",
+			    min_t(int, 32, hal_rx_desc_sz),
+			    msdu->data);
 		__skb_queue_purge(msdu_list);
 		return -EIO;
 	}

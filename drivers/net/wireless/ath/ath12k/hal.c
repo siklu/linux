@@ -536,23 +536,19 @@ void ath12k_hal_srng_access_begin(struct ath12k_base *ab, struct hal_srng *srng)
 	lockdep_assert_held(&srng->lock);
 
 	if (srng->ring_dir == HAL_SRNG_DIR_SRC) {
-		u32 tp = *(volatile u32 *)srng->u.src_ring.tp_addr;
-
-		if (unlikely(tp >= srng->ring_size)) {
+		srng->u.src_ring.cached_tp =
+			*(volatile u32 *)srng->u.src_ring.tp_addr;
+		if (unlikely(srng->u.src_ring.cached_tp >= srng->ring_size))
 			ath12k_warn(ab, "srng %d src tp out of bounds: tp %u ring_size %u\n",
-				    srng->ring_id, tp, srng->ring_size);
-			return;
-		}
-		srng->u.src_ring.cached_tp = tp;
+				    srng->ring_id, srng->u.src_ring.cached_tp,
+				    srng->ring_size);
 	} else {
 		hp = READ_ONCE(*srng->u.dst_ring.hp_addr);
 
-		if (unlikely(hp >= srng->ring_size)) {
+		if (unlikely(hp >= srng->ring_size))
 			ath12k_warn(ab, "srng %d dst hp out of bounds: hp %u ring_size %u (raw hp_addr value 0x%08x)\n",
 				    srng->ring_id, hp, srng->ring_size,
 				    READ_ONCE(*srng->u.dst_ring.hp_addr));
-			return;
-		}
 
 		if (hp != srng->u.dst_ring.cached_hp) {
 			srng->u.dst_ring.cached_hp = hp;

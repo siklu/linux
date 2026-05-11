@@ -148,14 +148,6 @@ static int ath12k_ce_completed_recv_next(struct ath12k_ce_pipe *pipe,
 	}
 
 	*skb = pipe->dest_ring->skb[sw_index];
-	if (unlikely(!*skb)) {
-		ath12k_warn(ab, "ce pipe %d recv NULL skb at sw_index %u, nbytes %d, srng hp %u tp %u\n",
-			    pipe->pipe_num, sw_index, *nbytes,
-			    srng->u.dst_ring.cached_hp,
-			    srng->u.dst_ring.tp);
-		ret = -EIO;
-		goto err;
-	}
 	pipe->dest_ring->skb[sw_index] = NULL;
 
 	sw_index = CE_RING_IDX_INCR(nentries_mask, sw_index);
@@ -194,15 +186,6 @@ static void ath12k_ce_recv_process_cb(struct ath12k_ce_pipe *pipe)
 		}
 
 		skb_put(skb, nbytes);
-
-		if (unlikely(nbytes < sizeof(struct ath12k_htc_hdr))) {
-			ath12k_warn(ab, "ce pipe %d recv too short frame: nbytes %d (min %zu)\n",
-				    pipe->pipe_num, nbytes,
-				    sizeof(struct ath12k_htc_hdr));
-			dev_kfree_skb_any(skb);
-			continue;
-		}
-
 		__skb_queue_tail(&list, skb);
 	}
 

@@ -268,7 +268,12 @@ void ath12k_htc_rx_completion_handler(struct ath12k_base *ab,
 	eid = le32_get_bits(hdr->htc_info, HTC_HDR_ENDPOINTID);
 
 	if (eid >= ATH12K_HTC_EP_COUNT) {
-		ath12k_warn(ab, "HTC Rx: invalid eid %d\n", eid);
+		ath12k_warn(ab, "HTC Rx: invalid eid %d, htc_info 0x%08x ctrl_info 0x%08x skb->len %d\n",
+			    eid, le32_to_cpu(hdr->htc_info),
+			    le32_to_cpu(hdr->ctrl_info), skb->len);
+		ath12k_warn(ab, "HTC Rx: payload after hdr (%d bytes): %*ph\n",
+			    min_t(int, skb->len, 32),
+			    min_t(int, skb->len, 32), skb->data);
 		goto out;
 	}
 
@@ -277,14 +282,21 @@ void ath12k_htc_rx_completion_handler(struct ath12k_base *ab,
 	payload_len = le32_get_bits(hdr->htc_info, HTC_HDR_PAYLOADLEN);
 
 	if (payload_len + sizeof(*hdr) > ATH12K_HTC_MAX_LEN) {
-		ath12k_warn(ab, "HTC rx frame too long, len: %zu\n",
-			    payload_len + sizeof(*hdr));
+		ath12k_warn(ab, "HTC rx frame too long, len: %zu, htc_info 0x%08x ctrl_info 0x%08x\n",
+			    payload_len + sizeof(*hdr),
+			    le32_to_cpu(hdr->htc_info),
+			    le32_to_cpu(hdr->ctrl_info));
+		ath12k_warn(ab, "HTC Rx: payload after hdr (%d bytes): %*ph\n",
+			    min_t(int, skb->len, 32),
+			    min_t(int, skb->len, 32), skb->data);
 		goto out;
 	}
 
 	if (skb->len < payload_len) {
-		ath12k_warn(ab, "HTC Rx: insufficient length, got %d, expected %d\n",
-			    skb->len, payload_len);
+		ath12k_warn(ab, "HTC Rx: insufficient length, got %d, expected %d, htc_info 0x%08x ctrl_info 0x%08x\n",
+			    skb->len, payload_len,
+			    le32_to_cpu(hdr->htc_info),
+			    le32_to_cpu(hdr->ctrl_info));
 		goto out;
 	}
 

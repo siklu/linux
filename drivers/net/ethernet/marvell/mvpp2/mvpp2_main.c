@@ -2733,12 +2733,14 @@ static void mvpp2_set_rxq_free_tresh(struct mvpp2_port *port,
 {
 	u32 val;
 
-	mvpp2_write(port->priv, MVPP2_RXQ_NUM_REG, rxq->id);
+	unsigned int thread = mvpp2_cpu_to_thread(port->priv, get_cpu());
+	mvpp2_thread_write(port->priv, thread, MVPP2_RXQ_NUM_REG, rxq->id);
 
-	val = mvpp2_read(port->priv, MVPP2_RXQ_THRESH_REG);
+	val = mvpp2_thread_read(port->priv, thread, MVPP2_RXQ_THRESH_REG);
 	val &= ~MVPP2_RXQ_NON_OCCUPIED_MASK;
 	val |= MSS_THRESHOLD_STOP << MVPP2_RXQ_NON_OCCUPIED_OFFSET;
-	mvpp2_write(port->priv, MVPP2_RXQ_THRESH_REG, val);
+	mvpp2_thread_write(port->priv, thread, MVPP2_RXQ_THRESH_REG, val);
+	put_cpu();
 }
 
 /* Set the number of packets that will be received before Rx interrupt

@@ -354,6 +354,7 @@ struct ath12k_link_vif {
 	struct wiphy_work bcn_tx_work;
 
 	bool set_wds_vdev_param;
+	bool nawds_enabled;
 };
 
 struct ath12k_vif {
@@ -494,6 +495,8 @@ struct ath12k_link_sta {
 	u8 addr[ETH_ALEN];
 
 	u16 tcl_metadata;
+	u16 ast_hash;
+	u16 ast_idx;
 
 	/* the following are protected by ar->data_lock */
 	u32 changed; /* IEEE80211_RC_* */

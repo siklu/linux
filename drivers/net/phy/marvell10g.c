@@ -414,15 +414,18 @@ static int mv3310_power_up(struct phy_device *phydev)
 	 * SWRST. Without this, the second and subsequent link-up sequences
 	 * result in broken TX/RX. The datasheet specifies bit 15 = 1 means
 	 * reset in progress, 0 means normal operation.
+	 * To be safe, also add a static delay after polling, with median upper
+	 * bound of SWRST completion time observed at <10ms.
 	 */
 	if (phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				      ret, !(ret & MV_V2_33X0_PORT_CTRL_SWRST),
 				      5000, 200000, true))
 		phydev_warn(phydev, "SWRST timed out 200ms\n");
+	msleep(10);
 
 	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_33X0_PORT_CTRL_SWRST);
-	msleep(100);
+	msleep(200);
 	return ret;
 }
 

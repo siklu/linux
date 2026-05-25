@@ -2273,6 +2273,11 @@ enum wmi_tlv_service {
 	WMI_TLV_SERVICE_WMSK_COMPACTION_RX_TLVS = 361,
 
 	WMI_TLV_SERVICE_PEER_METADATA_V1A_V1B_SUPPORT = 365,
+	WMI_TLV_SERVICE_THERM_THROT_POUT_REDUCTION = 410,
+	WMI_TLV_SERVICE_WDS_NULL_FRAME_SUPPORT = 421,
+	WMI_TLV_SERVICE_IS_TARGET_IPA = 425,
+	WMI_TLV_SERVICE_THERM_THROT_TX_CHAIN_MASK = 426,
+	WMI_TLV_SERVICE_THERM_THROT_5_LEVELS = 429,
 	WMI_TLV_SERVICE_ETH_OFFLOAD = 461,
 
 	WMI_MAX_EXT2_SERVICE,
@@ -2503,6 +2508,7 @@ struct ath12k_wmi_resource_config_arg {
 	u32 ema_max_vap_cnt;
 	u32 ema_max_profile_period;
 	bool is_reg_cc_ext_event_supported;
+	bool is_wds_null_frame_supported;
 };
 
 struct ath12k_wmi_init_cmd_arg {
@@ -2560,6 +2566,7 @@ struct wmi_init_cmd {
 #define WMI_RSRC_CFG_FLAG1_BSS_CHANNEL_INFO_64	BIT(5)
 #define WMI_RSRC_CFG_FLAGS2_CALC_NEXT_DTIM_COUNT_SET      BIT(9)
 #define WMI_RSRC_CFG_FLAGS2_FW_AST_INDICATION_DISABLE	BIT(18)
+#define WMI_RSRC_CFG_FLAGS2_WDS_NULL_FRAME_SUPPORT		BIT(22)
 #define WMI_RSRC_CFG_FLAG1_ACK_RSSI	BIT(18)
 
 struct ath12k_wmi_resource_config_params {

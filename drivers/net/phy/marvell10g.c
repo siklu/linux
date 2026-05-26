@@ -154,11 +154,6 @@ enum {
 struct mv3310_mactype {
 	bool valid;
 	bool fixed_interface;
-	/* PHY copper autoneg supports multiple speeds (1G/2.5G/5G/10G) even
-	 * though the host-side interface is fixed (rate matching). This allows
-	 * phylink to validate and advertise all copper speeds.
-	 */
-	bool copper_multispeed;
 	phy_interface_t interface_10g;
 };
 
@@ -962,7 +957,6 @@ static const struct mv3310_mactype mv3310_mactypes[] = {
 	[MV_V2_33X0_PORT_CTRL_MACTYPE_10GBASER_RATE_MATCH] = {
 		.valid = true,
 		.fixed_interface = true,
-		.copper_multispeed = true,
 		.interface_10g = PHY_INTERFACE_MODE_10GBASER,
 	},
 	[MV_V2_33X0_PORT_CTRL_MACTYPE_USXGMII] = {
@@ -997,7 +991,6 @@ static const struct mv3310_mactype mv3340_mactypes[] = {
 	[MV_V2_33X0_PORT_CTRL_MACTYPE_10GBASER_RATE_MATCH] = {
 		.valid = true,
 		.fixed_interface = true,
-		.copper_multispeed = true,
 		.interface_10g = PHY_INTERFACE_MODE_10GBASER,
 	},
 	[MV_V2_33X0_PORT_CTRL_MACTYPE_USXGMII] = {
@@ -1016,7 +1009,7 @@ static void mv3310_fill_possible_interfaces(struct phy_device *phydev)
 	if (mactype->interface_10g != PHY_INTERFACE_MODE_NA)
 		__set_bit(priv->mactype->interface_10g, possible);
 
-	if (!mactype->fixed_interface || mactype->copper_multispeed) {
+	if (!mactype->fixed_interface) {
 		__set_bit(PHY_INTERFACE_MODE_5GBASER, possible);
 		__set_bit(PHY_INTERFACE_MODE_2500BASEX, possible);
 		__set_bit(PHY_INTERFACE_MODE_SGMII, possible);
@@ -1054,15 +1047,10 @@ static int mv3310_config_init(struct phy_device *phydev)
 
 	mv3310_config_init_clear_power_down(phydev);
 
-	/* Force XFI/SGMII/Auto-neg mode regardless of strap configuration.
-	/* Default to rate-match mode so the host serdes stays fixed at 10GBASE-R
-	 * regardless of copper wire speed. This is correct for MACs (e.g. mvpp2) that
-	 * configure their comphy for 10GBASE-R and cannot handle the PHY switching
-	 * the host interface to SGMII on 1G link-up.
-	 */
+	/* Force XFI/SGMII/Auto-neg mode regardless of strap configuration */
 	err = phy_modify_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				     MV_V2_33X0_PORT_CTRL_MACTYPE_MASK,
-				     MV_V2_33X0_PORT_CTRL_MACTYPE_10GBASER_RATE_MATCH);
+				     MV_V2_33X0_PORT_CTRL_MACTYPE_10GBASER);
 	if (err)
 		return err;
 

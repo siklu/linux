@@ -105,6 +105,12 @@ struct mv3310_ptp_priv {
 	struct mii_timestamper mii_ts;
 	int old_speed; /* Last speed used to set MRU */
 	bool extts_enabled;
+	/* True once ptp_power_up has completed successfully.  While set,
+	 * ptp_power_up is a no-op (M-unit stays running) and mv3310_power_up
+	 * skips SWRST (which would clear M_UNIT_PWRUP and force WMC AN to
+	 * restart, causing the 1/150 silent frame-drop race).
+	 */
+	bool configured;
 };
 
 struct mv3310_ptp_counter {
@@ -142,6 +148,8 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_update(struct mv3310_ptp_priv *priv);
+bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv);
+
 /* Get statistics from the PHY using ethtool */
 int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
 void mv3310_ptp_get_strings(u8 *data);
@@ -278,6 +286,11 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	return priv;
 }
 
+bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv)
+{
+	return priv && priv->configured;
+}
+
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 {
 	int ret;
@@ -307,15 +320,15 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 					      MV_V2_SLC_CFG_GEN_SMC_ADD_CRC |
 					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
 					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
-
-	/* Increase the MRU for the default mode (XG) */
-	ret |= mv3310_set_mac_mru(priv, SPEED_10000);
-
 	/* Disable store-and-forward mode for egress drop FIFO. Without this
 	   setting there are time error spikes of up to 1200ns when performing
 	   1588TC accuracy measurements. */
 	ret |= mv3310_clear_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
 					 MV_V2_SLC_CFG_GEN_EGR_SF_EN);
+
+	if (ret == 0)
+		priv->configured = true;
+
 unlock_out:
 	mutex_unlock(&priv->lock);
 	return ret;
@@ -364,6 +377,13 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	if (ret < 0)
 		dev_err(&phydev->mdio.dev, "failed to enable PTP core: %d\n",
 			ret);
+
+	/* MRU is applied after link-up via mv3310_ptp_update().  Reset
+	 * old_speed so the next link-up always triggers a write regardless
+	 * of the previous speed class.
+	 */
+	priv->old_speed = SPEED_UNKNOWN;
+
 	mutex_unlock(&priv->lock);
 
 	return ret;
@@ -396,6 +416,14 @@ static int mv3310_set_mac_mru(struct mv3310_ptp_priv *priv, int speed)
 		return 0;
 	}
 
+	/* Configure MRU size depending on the operational speed. According to
+	 * docs:
+	 * 1G mode and 2.5G mode are sharing same set of configuration.
+	 * XG mode and 1/2.5 G mode have separate configuration register
+	 * but enable only one group during operation.
+	 * Therefore two register group act as one after operation speed is
+	 * determined
+	 */
 	if (speed < SPEED_5000) {
 		/* Configuration registers for 1/2.5G mode */
 		ret |= mv3310_set_ptp_reg_bits(

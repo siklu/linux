@@ -1444,5 +1444,6 @@ static inline struct ath12k *ath12k_pdev_dp_to_ar(struct ath12k_pdev_dp *dp)
 /* Module parameters */
 extern bool ath12k_split_phy_mode;
 extern bool ath12k_force_dualmac;
+extern unsigned int ath12k_frame_mode;
 
 #endif /* _CORE_H_ */

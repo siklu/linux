@@ -34,6 +34,12 @@ module_param_named(ftm_mode, ath12k_ftm_mode, bool, 0444);
 MODULE_PARM_DESC(ftm_mode, "Boots up in factory test mode");
 EXPORT_SYMBOL(ath12k_ftm_mode);
 
+unsigned int ath12k_frame_mode = ATH12K_HW_TXRX_ETHERNET;
+module_param_named(frame_mode, ath12k_frame_mode, uint, 0644);
+MODULE_PARM_DESC(frame_mode,
+		 "Datapath frame mode (0: raw, 1: native wifi, 2: ethernet (default))");
+EXPORT_SYMBOL(ath12k_frame_mode);
+
 bool ath12k_split_phy_mode;
 module_param_named(split_phy_mode, ath12k_split_phy_mode, bool, 0444);
 MODULE_PARM_DESC(split_phy_mode, "Enable split PHY mode (disable MLO, expose each radio as separate wiphy)");

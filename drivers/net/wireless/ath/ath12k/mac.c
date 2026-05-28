@@ -10248,6 +10248,7 @@ int ath12k_mac_vdev_create(struct ath12k *ar, struct ath12k_link_vif *arvif)
 	struct ath12k_wmi_vdev_create_arg vdev_arg = {};
 	struct ath12k_wmi_peer_create_arg peer_param = {};
 	struct ieee80211_bss_conf *link_conf = NULL;
+	struct wireless_dev *wdev = ieee80211_vif_to_wdev(vif);
 	u32 param_id, param_value;
 	u16 nss;
 	int i;
@@ -10447,6 +10448,17 @@ int ath12k_mac_vdev_create(struct ath12k *ar, struct ath12k_link_vif *arvif)
 	}
 
 	ath12k_dp_vdev_tx_attach(ar, arvif);
+
+	if (vif->type == NL80211_IFTYPE_STATION &&
+	    (wdev && wdev->use_4addr)) {
+		ret = ath12k_wmi_vdev_set_param_cmd(arvif->ar, arvif->vdev_id,
+						    WMI_VDEV_PARAM_WDS, 1);
+		if (ret) {
+			ath12k_warn(ar->ab, "failed to set WDS vdev param: %d\n", ret);
+			goto err_vdev_del;
+		}
+		arvif->set_wds_vdev_param = true;
+	}
 
 	return ret;
 

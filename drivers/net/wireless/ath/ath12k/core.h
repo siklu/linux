@@ -352,6 +352,7 @@ struct ath12k_link_vif {
 	u16 num_stations;
 	bool is_csa_in_progress;
 	struct wiphy_work bcn_tx_work;
+	bool set_wds_vdev_param;
 };
 
 struct ath12k_vif {

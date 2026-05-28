@@ -105,6 +105,12 @@ struct mv3310_ptp_priv {
 	struct mii_timestamper mii_ts;
 	int old_speed; /* Last speed used to set MRU */
 	bool extts_enabled;
+	/* True once ptp_power_up has completed successfully.  While set,
+	 * ptp_power_up is a no-op (M-unit stays running) and mv3310_power_up
+	 * skips SWRST (which would clear M_UNIT_PWRUP and force WMC AN to
+	 * restart, causing the 1/150 silent frame-drop race).
+	 */
+	bool configured;
 };
 
 struct mv3310_ptp_counter {
@@ -142,6 +148,8 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_update(struct mv3310_ptp_priv *priv);
+bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv);
+
 /* Get statistics from the PHY using ethtool */
 int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
 void mv3310_ptp_get_strings(u8 *data);
@@ -278,6 +286,11 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	return priv;
 }
 
+bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv)
+{
+	return priv && priv->configured;
+}
+
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 {
 	int ret;
@@ -287,6 +300,15 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 		return 0;
 	
 	phydev = priv->phydev;
+
+	/* Configure M-unit only once.  Once WMC auto-negotiation completes it
+	 * must not be restarted: a MAC SerDes transition between ptp_start
+	 * calls can stall WMC AN, causing the M-unit to silently drop frames.
+	 * If the M-unit is already alive and fully configured, skip.
+	 */
+	if (priv->configured && mv3310_is_ptp_powered_up(phydev)) {
+		return 0;
+	}
 
 	mutex_lock(&priv->lock);
 	/* Enable M unit used for PTP */
@@ -307,15 +329,15 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 					      MV_V2_SLC_CFG_GEN_SMC_ADD_CRC |
 					      MV_V2_SLC_CFG_GEN_WMC_STRIP_CRC |
 					      MV_V2_SLC_CFG_GEN_SMC_STRIP_CRC);
-
-	/* Increase the MRU for the default mode (XG) */
-	ret |= mv3310_set_mac_mru(priv, SPEED_10000);
-
 	/* Disable store-and-forward mode for egress drop FIFO. Without this
 	   setting there are time error spikes of up to 1200ns when performing
 	   1588TC accuracy measurements. */
 	ret |= mv3310_clear_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
 					 MV_V2_SLC_CFG_GEN_EGR_SF_EN);
+
+	if (ret == 0)
+		priv->configured = true;
+
 unlock_out:
 	mutex_unlock(&priv->lock);
 	return ret;
@@ -364,6 +386,26 @@ int mv3310_ptp_start(struct mv3310_ptp_priv *priv)
 	if (ret < 0)
 		dev_err(&phydev->mdio.dev, "failed to enable PTP core: %d\n",
 			ret);
+
+	ret = 0;
+	/* MRU is applied after link-up via mv3310_ptp_update().  Reset
+	 * old_speed so the next link-up always triggers a write regardless
+	 * of the previous speed class.
+	 */
+	priv->old_speed = SPEED_UNKNOWN;
+
+	{
+		u32 smcxg = 0, wmcxg = 0, smc1g = 0, wmc1g = 0;
+
+		mv3310_read_ptp_reg(phydev, MV_V2_SMC_XG_MRU_CTRL_REG, &smcxg);
+		mv3310_read_ptp_reg(phydev, MV_V2_WMC_XG_MRU_CTRL_REG, &wmcxg);
+		mv3310_read_ptp_reg(phydev, MV_V2_SMC_1G_MRU_CTRL_REG, &smc1g);
+		mv3310_read_ptp_reg(phydev, MV_V2_WMC_1G_MRU_CTRL_REG, &wmc1g);
+		dev_info(&phydev->mdio.dev,
+			 "ptp_start: MRU xg=%#x/%#x 1g=%#x/%#x (ret=%d)\n",
+			 smcxg, wmcxg, smc1g, wmc1g, ret);
+	}
+
 	mutex_unlock(&priv->lock);
 
 	return ret;
@@ -416,6 +458,18 @@ static int mv3310_set_mac_mru(struct mv3310_ptp_priv *priv, int speed)
 				    speed, ret);
 	else
 		priv->old_speed = speed;
+
+	{
+		u32 smcxg = 0, wmcxg = 0, smc1g = 0, wmc1g = 0;
+
+		mv3310_read_ptp_reg(phydev, MV_V2_SMC_XG_MRU_CTRL_REG, &smcxg);
+		mv3310_read_ptp_reg(phydev, MV_V2_WMC_XG_MRU_CTRL_REG, &wmcxg);
+		mv3310_read_ptp_reg(phydev, MV_V2_SMC_1G_MRU_CTRL_REG, &smc1g);
+		mv3310_read_ptp_reg(phydev, MV_V2_WMC_1G_MRU_CTRL_REG, &wmc1g);
+		dev_info(&phydev->mdio.dev,
+			 "ptp_update: speed=%d MRU xg=%#x/%#x 1g=%#x/%#x (ret=%d)\n",
+			 speed, smcxg, wmcxg, smc1g, wmc1g, ret);
+	}
 
 	return ret;
 }

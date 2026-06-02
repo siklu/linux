@@ -531,7 +531,6 @@ struct ath12k_sta {
 	struct wiphy_work set_4addr_wk;
 
 	enum ieee80211_sta_state state;
-	u16 tcl_metadata;
 };
 
 #define ATH12K_HALF_20MHZ_BW	10

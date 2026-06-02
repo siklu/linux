@@ -101,6 +101,8 @@ int ath12k_wifi7_dp_tx(struct ath12k_pdev_dp *dp_pdev, struct ath12k_link_vif *a
 	if (info->flags & IEEE80211_TX_CTL_HW_80211_ENCAP)
 		eth = (struct ethhdr *)skb->data;
 
+	dp_link_vif = ath12k_dp_vif_to_dp_link_vif(&ahvif->dp_vif, arvif->link_id);
+
 	if (eth && is_multicast_ether_addr(eth->h_dest) && arsta) {
 		ti.meta_data_flags = arsta->tcl_metadata;
 		peer_id = u16_get_bits(ti.meta_data_flags, HTT_TCL_META_DATA_PEER_ID_MISSION);
@@ -137,8 +139,6 @@ tcl_ring_sel:
 	tx_desc = ath12k_dp_tx_assign_buffer(dp, pool_id);
 	if (!tx_desc)
 		return -ENOMEM;
-
-	dp_link_vif = ath12k_dp_vif_to_dp_link_vif(&ahvif->dp_vif, arvif->link_id);
 
 	ti.bank_id = dp_link_vif->bank_id;
 

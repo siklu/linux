@@ -405,16 +405,6 @@ static int mv3310_power_up(struct phy_device *phydev)
 	    priv->firmware_ver < 0x00030000)
 		return ret;
 
-	/* Poll until SWRST reads 0 (PHY ready for a new reset) before issuing
-	 * SWRST. Without this, the second and subsequent link-up sequences
-	 * result in broken TX/RX. The datasheet specifies bit 15 = 1 means
-	 * reset in progress, 0 means normal operation.
-	 */
-	if (phy_read_mmd_poll_timeout(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
-				      ret, !(ret & MV_V2_33X0_PORT_CTRL_SWRST),
-				      5000, 200000, true))
-		phydev_warn(phydev, "SWRST timed out 200ms\n");
-
 	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_33X0_PORT_CTRL_SWRST);
 	msleep(100);

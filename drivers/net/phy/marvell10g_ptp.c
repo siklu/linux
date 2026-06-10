@@ -149,6 +149,8 @@ int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_update(struct mv3310_ptp_priv *priv);
 bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_clear_mac_aneg(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_set_mac_aneg(struct mv3310_ptp_priv *priv);
 
 /* Get statistics from the PHY using ethtool */
 int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
@@ -289,6 +291,36 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv)
 {
 	return priv && priv->configured;
+}
+
+int mv3310_ptp_clear_mac_aneg(struct mv3310_ptp_priv *priv)
+{
+	struct phy_device *phydev;
+
+	if (!priv)
+		return 0;
+
+	phydev = priv->phydev;
+
+	/* Disable WMC and SMC auto-negotiation */
+	return mv3310_clear_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
+					 MV_V2_SLC_CFG_GEN_WMC_ANEG_EN |
+					 MV_V2_SLC_CFG_GEN_SMC_ANEG_EN);
+}
+
+int mv3310_ptp_set_mac_aneg(struct mv3310_ptp_priv *priv)
+{
+	struct phy_device *phydev;
+
+	if (!priv)
+		return 0;
+
+	phydev = priv->phydev;
+
+	/* Enable WMC and SMC auto-negotiation */
+	return mv3310_set_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
+				       MV_V2_SLC_CFG_GEN_WMC_ANEG_EN |
+				       MV_V2_SLC_CFG_GEN_SMC_ANEG_EN);
 }
 
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)

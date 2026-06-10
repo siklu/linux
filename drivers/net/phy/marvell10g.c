@@ -198,7 +198,8 @@ int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
 void mv3310_ptp_get_strings(u8 *data);
 void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
 			  struct ethtool_stats *stats, u64 *data);
-bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_clear_mac_aneg(struct mv3310_ptp_priv *priv);
+int mv3310_ptp_set_mac_aneg(struct mv3310_ptp_priv *priv);
 #else
 static inline struct mv3310_ptp_priv *
 mv3310_ptp_probe(struct phy_device *phydev)
@@ -232,9 +233,13 @@ static inline void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
 					struct ethtool_stats *stats, u64 *data)
 {
 }
-static inline bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv)
+static inline int mv3310_ptp_clear_mac_aneg(struct mv3310_ptp_priv *priv)
 {
-	return false;
+	return 0;
+}
+static inline int mv3310_ptp_set_mac_aneg(struct mv3310_ptp_priv *priv)
+{
+	return 0;
 }
 #endif
 
@@ -386,15 +391,11 @@ static int mv3310_check_firmware(struct phy_device *phydev);
 static int mv3310_power_up(struct phy_device *phydev)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
-	bool ptp_was_configured;
 	int ret;
 
 	ret = mv3310_check_firmware(phydev);
 	if (ret < 0)
 		return ret;
-
-	/* Capture PTP configured state before power_up potentially sets it. */
-	ptp_was_configured = mv3310_ptp_is_configured(priv->ptp_priv);
 
 	ret = mv3310_ptp_power_up(priv->ptp_priv);
 	if (ret < 0)
@@ -414,20 +415,17 @@ static int mv3310_power_up(struct phy_device *phydev)
 	    priv->firmware_ver < 0x00030000)
 		return ret;
 
-	if (ptp_was_configured) {
-		/* Skip SWRST if the M-unit was already configured on prior power cycles.
-		 * SWRST (bit 15) resets the entire port and clears M_UNIT_PWRUP,
-		 * forcing WMC auto-negotiation to restart.  A MAC SerDes
-		 * transition between ptp_start calls can stall WMC AN, causing
-		 * the M-unit to silently drop all frames (~1/150 link cycles).
-		 * Once the M-unit is configured it must not be disturbed.
-		 */
-		return ret;
-	}
+	/* Disable WMC/SMC auto-negotiation before SWRST to prevent stalling
+	 * during the reset window */
+	ret |= mv3310_ptp_clear_mac_aneg(priv->ptp_priv);
 
-	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
+	ret |= phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_33X0_PORT_CTRL_SWRST);
 	msleep(100);
+
+	/* Re-enable WMC/SMC auto-negotiation after SWRST */
+	ret |= mv3310_ptp_set_mac_aneg(priv->ptp_priv);
+
 	return ret;
 }
 

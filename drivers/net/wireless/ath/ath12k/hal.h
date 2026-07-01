@@ -1483,8 +1483,6 @@ int ath12k_hal_srng_get_entrysize(struct ath12k_base *ab, u32 ring_type);
 int ath12k_hal_srng_get_max_entries(struct ath12k_base *ab, u32 ring_type);
 void ath12k_hal_srng_get_params(struct ath12k_base *ab, struct hal_srng *srng,
 				struct hal_srng_params *params);
-u32 ath12k_hal_srng_dst_get_curr_tp(struct hal_srng *srng);
-void *ath12k_hal_srng_dst_ring_get_and_update_tp(struct hal_srng *srng, u32 *updated_tp);
 void *ath12k_hal_srng_dst_get_next_entry(struct ath12k_base *ab,
 					 struct hal_srng *srng);
 void *ath12k_hal_srng_src_peek(struct ath12k_base *ab, struct hal_srng *srng);
@@ -1501,7 +1499,6 @@ void *ath12k_hal_srng_src_get_next_entry(struct ath12k_base *ab,
 					 struct hal_srng *srng);
 int ath12k_hal_srng_src_num_free(struct ath12k_base *ab, struct hal_srng *srng,
 				 bool sync_hw_ptr);
-void ath12k_hal_srng_update_tp(struct hal_srng *srng, u32 new_tp);
 void ath12k_hal_srng_access_begin(struct ath12k_base *ab,
 				  struct hal_srng *srng);
 void ath12k_hal_srng_access_end(struct ath12k_base *ab, struct hal_srng *srng);

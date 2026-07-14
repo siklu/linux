@@ -2512,6 +2512,24 @@ int phylink_ethtool_ksettings_get(struct phylink *pl,
 		 */
 		phylink_get_ksettings(&link_state, kset);
 		break;
+
+	default:
+		/* MLO_AN_PHY without a PHY device: the interface is not yet
+		 * fully configured (e.g. waiting for an SFP module to be
+		 * detected and its state machine to run). Return the current
+		 * link_config state so that userspace sees a consistent
+		 * picture and, crucially, does not observe autoneg=false and
+		 * perform a read-modify-write that forces autoneg off before
+		 * the SFP initialisation completes.
+		 */
+		if (!pl->phydev) {
+			phylink_info(pl,
+				    "ksettings_get: pre-init state, returning link_config (interface=%s, caller=%s[%d])\n",
+				    phy_modes(pl->link_config.interface),
+				    current->comm, current->pid);
+			phylink_get_ksettings(&pl->link_config, kset);
+		}
+		break;
 	}
 
 	return 0;

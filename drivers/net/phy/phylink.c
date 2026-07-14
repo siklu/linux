@@ -1288,6 +1288,11 @@ static int phylink_change_inband_advert(struct phylink *pl)
 					pl->link_config.interface,
 					pl->link_config.advertising);
 
+	phylink_info(pl,
+		     "change_inband_advert: pcs_neg_mode=%u interface=%s adv=%*pb\n",
+		     pl->pcs_neg_mode, phy_modes(pl->link_config.interface),
+		     __ETHTOOL_LINK_MODE_MASK_NBITS, pl->link_config.advertising);
+
 	neg_mode = pl->cur_link_an_mode;
 	if (pl->pcs->neg_mode)
 		neg_mode = pl->pcs_neg_mode;
@@ -2527,6 +2532,12 @@ int phylink_ethtool_ksettings_set(struct phylink *pl,
 
 	ASSERT_RTNL();
 
+	phylink_info(pl,
+		     "ksettings_set: entry autoneg=%u speed=%u duplex=%u adv=%*pb caller=%s[%d]\n",
+		     kset->base.autoneg, kset->base.speed, kset->base.duplex,
+		     __ETHTOOL_LINK_MODE_MASK_NBITS, kset->link_modes.advertising,
+		     current->comm, current->pid);
+
 	if (pl->phydev) {
 		struct ethtool_link_ksettings phy_kset = *kset;
 
@@ -2635,6 +2646,12 @@ int phylink_ethtool_ksettings_set(struct phylink *pl,
 				    __ETHTOOL_LINK_MODE_MASK_NBITS, support);
 			return -EINVAL;
 		}
+
+		phylink_info(pl,
+			     "ksettings_set: SFP write accepted (interface=%s, adv=%*pb, caller=%s[%d])\n",
+			     phy_modes(config.interface),
+			     __ETHTOOL_LINK_MODE_MASK_NBITS, config.advertising,
+			     current->comm, current->pid);
 	} else {
 		/* Validate without changing the current supported mask. */
 		linkmode_copy(support, pl->supported);
@@ -2769,6 +2786,11 @@ int phylink_ethtool_set_pauseparam(struct phylink *pl,
 	manual_changed = (config->pause ^ pause_state) & MLO_PAUSE_AN ||
 			 (!(pause_state & MLO_PAUSE_AN) &&
 			   (config->pause ^ pause_state) & MLO_PAUSE_TXRX_MASK);
+
+	phylink_info(pl,
+		     "set_pauseparam: old_pause=%02x new_pause=%02x manual_changed=%d caller=%s[%d]\n",
+		     config->pause, pause_state, manual_changed,
+		     current->comm, current->pid);
 
 	config->pause = pause_state;
 

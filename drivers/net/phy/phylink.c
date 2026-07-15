@@ -3015,13 +3015,6 @@ int phylink_ethtool_ksettings_set(struct phylink *pl,
 	    phylink_is_empty_linkmode(config.advertising))
 		return -EINVAL;
 
-	/* Validate the autonegotiation state. We don't have a PHY in this
-	 * situation, so the PCS is the media-facing entity.
-	 */
-	if (!phylink_validate_pcs_inband_autoneg(pl, config.interface,
-						 config.advertising))
-		return -EINVAL;
-
 	mutex_lock(&pl->state_mutex);
 	pl->link_config.speed = config.speed;
 	pl->link_config.duplex = config.duplex;

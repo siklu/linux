@@ -88,6 +88,7 @@ struct phylink {
 
 	struct sfp_bus *sfp_bus;
 	bool sfp_may_have_phy;
+	bool sfp_config_optical_done; /* Reproduce TG-1261: hole fires on second call */
 	DECLARE_PHY_INTERFACE_MASK(sfp_interfaces);
 	__ETHTOOL_DECLARE_LINK_MODE_MASK(sfp_support);
 	u8 sfp_port;
@@ -2853,6 +2854,25 @@ int phylink_ethtool_ksettings_get(struct phylink *pl,
 		 */
 		phylink_get_ksettings(&link_state, kset);
 		break;
+
+	default:
+		/* MLO_AN_PHY without a PHY device: the interface is not yet
+		 * fully configured (e.g. waiting for an SFP module to be
+		 * detected and its state machine to run). Return the current
+		 * link_config state so that userspace sees a consistent view
+		 * (act_link_an_mode will stay here permanently if
+		 * phylink_sfp_config_optical fails, which is the reproduce
+		 * scenario we are testing).
+		 */
+		if (!pl->phydev) {
+			phylink_info(pl,
+				     "ksettings_get: pre-init state (act_mode=%u interface=%s caller=%s[%d])\n",
+				     pl->act_link_an_mode,
+				     phy_modes(pl->link_config.interface),
+				     current->comm, current->pid);
+			phylink_get_ksettings(&pl->link_config, kset);
+		}
+		break;
 	}
 
 	return 0;
@@ -2990,8 +3010,23 @@ int phylink_ethtool_ksettings_set(struct phylink *pl,
 			config.interface =
 				phylink_sfp_select_interface_speed(pl,
 							config.speed);
-		if (config.interface == PHY_INTERFACE_MODE_NA)
-			return -EINVAL;
+		if (config.interface == PHY_INTERFACE_MODE_NA) {
+			/* Reproduce: fall back to the current link_config interface
+			 * (set by SFP module insertion) when sfp_select_interface
+			 * fails because advertising carries only Autoneg_BIT with
+			 * no speed bits (userspace read speed=0 from pre-init
+			 * ksettings_get).  Mirror what happens on 6.12 where
+			 * ksettings_get returns speed=10000 so InterfaceAgent0
+			 * includes the speed bit in advertising.
+			 */
+			if (pl->link_config.interface != PHY_INTERFACE_MODE_NA) {
+				config.interface = pl->link_config.interface;
+				linkmode_or(config.advertising, config.advertising,
+					    pl->supported);
+			} else {
+				return -EINVAL;
+			}
+		}
 
 		/* Revalidate with the selected interface */
 		linkmode_copy(support, pl->supported);
@@ -3708,11 +3743,31 @@ static int phylink_sfp_config_optical(struct phylink *pl)
 		 * support, clear the advertising mask and Autoneg bit in
 		 * the support mask. Otherwise, just clear the Autoneg bit
 		 * in the advertising mask.
+		 *
+		 * Reproduce TG-1261: intentionally skip linkmode_zero() so
+		 * that Autoneg_BIT survives in config.advertising.  For a
+		 * 10GBase-LR SFP on mvpp2 XLG PCS, phylink_inband_caps()
+		 * returns LINK_INBAND_DISABLE and phylink_validate_pcs_inband_autoneg()
+		 * then rejects the Autoneg_BIT advertisement, causing
+		 * phylink_sfp_config_optical() to return -EINVAL and the SFP
+		 * state machine to leave the carrier permanently down.  This
+		 * mirrors the kernel 6.12 behaviour before commit 99502c61e80c1
+		 * (mvpp2: XLG PCS reports LINK_INBAND_DISABLE).
 		 */
 		if (phy_interface_weight(pl->sfp_interfaces) == 1) {
 			linkmode_clear_bit(ETHTOOL_LINK_MODE_Autoneg_BIT,
 					   pl->sfp_support);
-			linkmode_zero(config.advertising);
+			if (!pl->sfp_config_optical_done) {
+				/* First call (boot): run normally so eth3 comes
+				 * up.  On the second call (triggered by the
+				 * InterfaceAgent reproduce task bouncing the
+				 * interface down/up), skip this zero so that
+				 * Autoneg_BIT survives and the guard below
+				 * fails → SFP SM error → carrier stays down.
+				 */
+				linkmode_zero(config.advertising);
+			}
+			pl->sfp_config_optical_done = true;
 		} else {
 			linkmode_clear_bit(ETHTOOL_LINK_MODE_Autoneg_BIT,
 					   config.advertising);

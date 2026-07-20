@@ -246,6 +246,8 @@ struct sfp {
 	int gpio_irq[GPIO_MAX];
 
 	bool need_poll;
+	unsigned int i2c_detect_retries;
+	unsigned int i2c_detect_delay_count;
 
 	/* Access rules:
 	 * state_hw_drive: st_mutex held
@@ -566,13 +568,12 @@ static const struct sfp_quirk *sfp_lookup_quirk(const struct sfp_eeprom_id *id)
 }
 
 static unsigned long poll_jiffies;
+static int sfp_read(struct sfp *sfp, bool a2, u8 addr, void *buf, size_t len);
 
 static unsigned int sfp_gpio_get_state(struct sfp *sfp)
 {
 	unsigned int i, state, v;
-	int repeat = 10;
 
-again:
 	for (i = state = 0; i < GPIO_MAX; i++) {
 		if (gpio_flags[i] != GPIOD_IN || !sfp->gpio[i])
 			continue;
@@ -582,21 +583,60 @@ again:
 			state |= BIT(i);
 	}
 
-	/* Trivial debounce. When no state change is detected, wait for up to
-	 * a limited bound time interval for the signal state to settle.
-	 */
-	if (state == sfp->state && repeat > 0) {
-		udelay(10);
-		repeat--;
-		goto again;
-	}
-
 	return state;
 }
 
 static unsigned int sff_gpio_get_state(struct sfp *sfp)
 {
 	return sfp_gpio_get_state(sfp) | SFP_F_PRESENT;
+}
+
+#define N_I2C_DETECT_RETRIES	3
+
+/*
+ * TG-1261 repro: force sfp_i2c_get_state() to withhold SFP_F_PRESENT for
+ * this many poll cycles (poll_jiffies apart, ~100ms each) before allowing
+ * real I2C presence detection to proceed. This deterministically delays
+ * SFP_E_INSERT (and therefore phylink_sfp_config_optical()) relative to
+ * register_netdev(), instead of depending on real I2C flakiness. Defaults
+ * to 0 (disabled, no behavioural change). Set via
+ * sfp.sfp_i2c_detect_delay_polls=<n> on the kernel command line.
+ */
+static unsigned int sfp_i2c_detect_delay_polls;
+module_param(sfp_i2c_detect_delay_polls, uint, 0644);
+MODULE_PARM_DESC(sfp_i2c_detect_delay_polls,
+		 "TG-1261 repro: withhold SFP presence detection for this many "
+		 "~100ms poll cycles (0 = off)");
+
+/* Detect module presence via I2C when MODDEF0 GPIO is not available.
+ * Performs a single I2C read per poll (every 100ms) and uses a debounce
+ * counter across consecutive polls: the module is reported as removed
+ * only after N_I2C_DETECT_RETRIES consecutive failures. A single
+ * successful read resets the counter and confirms presence.
+ */
+static unsigned int sfp_i2c_get_state(struct sfp *sfp)
+{
+	unsigned int state = sfp_gpio_get_state(sfp);
+	u8 val;
+
+	if (sfp->i2c_detect_delay_count < sfp_i2c_detect_delay_polls) {
+		sfp->i2c_detect_delay_count++;
+		dev_info(sfp->dev,
+			 "TG-1261 repro: withholding SFP presence (%u/%u polls)\n",
+			 sfp->i2c_detect_delay_count, sfp_i2c_detect_delay_polls);
+		return state;
+	}
+
+	if (sfp_read(sfp, false, 0, &val, sizeof(val)) == sizeof(val)) {
+		sfp->i2c_detect_retries = N_I2C_DETECT_RETRIES;
+		state |= SFP_F_PRESENT;
+	} else if (sfp->i2c_detect_retries) {
+		/* Not yet exhausted retries, keep reporting present */
+		sfp->i2c_detect_retries--;
+		state |= SFP_F_PRESENT;
+	}
+
+	return state;
 }
 
 /**
@@ -721,6 +761,8 @@ static int sfp_i2c_configure(struct sfp *sfp, struct i2c_adapter *i2c)
 	sfp->i2c = i2c;
 	sfp->read = sfp_i2c_read;
 	sfp->write = sfp_i2c_write;
+
+	sfp->i2c_block_size = SFP_EEPROM_BLOCK_SIZE;
 
 	return 0;
 }
@@ -3059,9 +3101,13 @@ static int sfp_probe(struct platform_device *pdev)
 	sfp->get_state = sfp_gpio_get_state;
 	sfp->set_state = sfp_gpio_set_state;
 
-	/* Modules that have no detect signal are always present */
-	if (!(sfp->gpio[GPIO_MODDEF0]))
-		sfp->get_state = sff_gpio_get_state;
+	/* Modules that have no detect signal use I2C probing for presence
+	 * detection, which allows hotplug to work without a MODDEF0 GPIO.
+	 */
+	if (!(sfp->gpio[GPIO_MODDEF0])) {
+		sfp->get_state = sfp_i2c_get_state;
+		sfp->need_poll = true;
+	}
 
 	device_property_read_u32(&pdev->dev, "maximum-power-milliwatt",
 				 &sfp->max_power_mW);

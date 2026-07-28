@@ -1963,6 +1963,32 @@ void ath12k_mac_handle_beacon_miss(struct ath12k *ar,
 	if (!(arvif->is_created && arvif->is_up))
 		return;
 
+	if (time_after(jiffies,
+		       arvif->last_beacon_miss + ATH12K_BEACON_MISS_DECAY_HZ))
+		arvif->beacon_miss_count = 0;
+
+	arvif->last_beacon_miss = jiffies;
+	arvif->beacon_miss_count++;
+
+	/* Any beacon received in between two miss events cancels the connection
+	 * loss work queued below, see ath12k_mac_handle_beacon_iter(). On a link
+	 * that is broken in the STA -> AP direction only, the firmware keeps
+	 * reporting beacon miss while single beacons still get through, so that
+	 * work is cancelled over and over again and never runs. The STA then
+	 * stays associated to an AP that may have kicked it out long ago, until
+	 * the firmware keepalive finally expires (~1 hour). Give up once a burst
+	 * of miss events has been seen, no matter what arrived in between.
+	 */
+	if (arvif->beacon_miss_count >= ATH12K_MAX_BEACON_MISS_EVENTS) {
+		ath12k_warn(ar->ab,
+			    "vdev %u: %u beacon miss events, considering the connection lost\n",
+			    arvif->vdev_id, arvif->beacon_miss_count);
+		arvif->beacon_miss_count = 0;
+		cancel_delayed_work(&arvif->connection_loss_work);
+		ieee80211_connection_loss(vif);
+		return;
+	}
+
 	ieee80211_beacon_loss(vif);
 
 	/* Firmware doesn't report beacon loss events repeatedly. If AP probe
@@ -4002,6 +4028,7 @@ static void ath12k_bss_disassoc(struct ath12k *ar,
 
 	memset(&arvif->rekey_data, 0, sizeof(arvif->rekey_data));
 
+	arvif->beacon_miss_count = 0;
 	cancel_delayed_work(&arvif->connection_loss_work);
 }
 

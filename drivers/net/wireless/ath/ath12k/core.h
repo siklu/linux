@@ -59,6 +59,14 @@
 #define ATH12K_INVALID_HW_MAC_ID	0xFF
 #define ATH12K_CONNECTION_LOSS_HZ	(3 * HZ)
 
+/* Consider the connection lost after this many firmware beacon miss events,
+ * even if beacons keep trickling in between them.
+ */
+#define ATH12K_MAX_BEACON_MISS_EVENTS	5
+
+/* Beacon miss events older than this do not count towards the limit above. */
+#define ATH12K_BEACON_MISS_DECAY_HZ	(30 * HZ)
+
 #define ATH12K_MON_TIMER_INTERVAL  10
 #define ATH12K_RESET_TIMEOUT_HZ			(20 * HZ)
 #define ATH12K_RESET_MAX_FAIL_COUNT_FIRST	3
@@ -326,6 +334,8 @@ struct ath12k_link_vif {
 	u8 bssid[ETH_ALEN];
 	struct cfg80211_bitrate_mask bitrate_mask;
 	struct delayed_work connection_loss_work;
+	unsigned long last_beacon_miss;
+	u32 beacon_miss_count;
 	int num_legacy_stations;
 	int rtscts_prot_mode;
 	int txpower;

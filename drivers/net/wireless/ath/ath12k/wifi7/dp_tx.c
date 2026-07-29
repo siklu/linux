@@ -785,7 +785,16 @@ static void ath12k_wifi7_dp_tx_complete_msdu(struct ath12k_pdev_dp *dp_pdev,
 
 	peer = ath12k_dp_link_peer_find_by_peerid(dp_pdev, ts->peer_id);
 	if (!peer || !peer->sta) {
-		ath12k_err(ab,
+		/* Tx completions for frames that were still queued in the
+		 * firmware when the peer got deleted are expected to arrive
+		 * after the peer is gone, e.g. when an unresponsive station is
+		 * kicked out and ath12k_mac_flush() times out with hundreds of
+		 * pkts pending. There is nothing to report to mac80211 in that
+		 * case, so keep this at debug level: one error print per
+		 * in-flight MSDU floods the log (and the console) badly enough
+		 * to disturb the rest of the system.
+		 */
+		ath12k_dbg(ab, ATH12K_DBG_DATA,
 			   "dp_tx: failed to find the peer with peer_id %d\n",
 			   ts->peer_id);
 		ieee80211_free_txskb(ath12k_pdev_dp_to_hw(dp_pdev), msdu);

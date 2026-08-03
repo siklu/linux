@@ -6631,24 +6631,20 @@ static int ath12k_mac_sta_set_4addr(struct wiphy *wiphy, struct ath12k_sta *ahst
 		ahvif = arvif->ahvif;
 		ar = arvif->ar;
 
-		/*
-		 * A station interface already has WMI_VDEV_PARAM_WDS set at
-		 * vdev creation time, so USE_4ADDR is not needed for it. NAWDS
-		 * below still is, hence only the peer param is skipped here.
-		 */
-		if (!arvif->set_wds_vdev_param) {
-			ath12k_dbg(ar->ab, ATH12K_DBG_MAC,
-				   "setting USE_4ADDR for peer %pM\n", arsta->addr);
+		if (arvif->set_wds_vdev_param)
+			goto skip_nawds;
 
-			ret = ath12k_wmi_set_peer_param(ar, arsta->addr,
-							arvif->vdev_id,
-							WMI_PEER_USE_4ADDR,
-							WMI_PEER_4ADDR_ALLOW_EAPOL_DATA_FRAME);
-			if (ret) {
-				ath12k_warn(ar->ab, "failed to set peer %pM 4addr capability: %d\n",
-					    arsta->addr, ret);
-				return ret;
-			}
+		ath12k_dbg(ar->ab, ATH12K_DBG_MAC,
+			   "setting USE_4ADDR for peer %pM\n", arsta->addr);
+
+		ret = ath12k_wmi_set_peer_param(ar, arsta->addr,
+						arvif->vdev_id,
+						WMI_PEER_USE_4ADDR,
+						WMI_PEER_4ADDR_ALLOW_EAPOL_DATA_FRAME);
+		if (ret) {
+			ath12k_warn(ar->ab, "failed to set peer %pM 4addr capability: %d\n",
+				    arsta->addr, ret);
+			return ret;
 		}
 
 		if (ahvif->dp_vif.tx_encap_type != ATH12K_HW_TXRX_ETHERNET)

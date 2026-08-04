@@ -177,7 +177,17 @@ tcl_ring_sel:
 	ti.bss_ast_hash = dp_link_vif->ast_hash;
 	ti.bss_ast_idx = dp_link_vif->ast_idx;
 
-	if (eth && is_multicast_ether_addr(eth->h_dest) && arsta) {
+	/*
+	 * On a 4-address link mac80211 tells us the target station, so point
+	 * the descriptor at its AST entry and skip the hardware address
+	 * search. Otherwise the hardware has to resolve the ethernet DA
+	 * through the AST, which misses for every DA that has not been learned
+	 * behind the station, i.e. all unknown unicast traffic.
+	 *
+	 * arsta is only populated for 4-address peers, so regular 3-address
+	 * stations keep using the vdev level metadata and the address search.
+	 */
+	if (eth && arsta) {
 		ti.meta_data_flags = arsta->tcl_metadata;
 		ti.bss_ast_hash = arsta->ast_hash & ATH12K_AST_HASH_MASK;
 		ti.bss_ast_idx = arsta->ast_idx;

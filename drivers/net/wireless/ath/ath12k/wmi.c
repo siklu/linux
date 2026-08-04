@@ -8249,6 +8249,7 @@ static int ath12k_wmi_tlv_fw_stats_data_parse(struct ath12k_base *ab,
 	for (i = 0; i < le32_to_cpu(ev->num_vdev_stats); i++) {
 		const struct wmi_vdev_stats_params *src;
 		struct ath12k_fw_stats_vdev *dst;
+		u32 vdev_id;
 
 		src = data;
 		if (len < sizeof(*src)) {
@@ -8256,7 +8257,14 @@ static int ath12k_wmi_tlv_fw_stats_data_parse(struct ath12k_base *ab,
 			goto exit;
 		}
 
-		arvif = ath12k_mac_get_arvif(ar, le32_to_cpu(src->vdev_id));
+		/* Firmware reports the stats of all the active vdevs of the
+		 * device irrespective of the pdev they belong to, so skip the
+		 * ones this radio does not own instead of letting the lookup
+		 * below complain about them.
+		 */
+		vdev_id = le32_to_cpu(src->vdev_id);
+		arvif = (ar->allocated_vdev_map & (1LL << vdev_id)) ?
+			ath12k_mac_get_arvif(ar, vdev_id) : NULL;
 		if (arvif) {
 			spin_lock_bh(&ab->base_lock);
 			arsta = ath12k_link_sta_find_by_addr(ab, arvif->bssid);

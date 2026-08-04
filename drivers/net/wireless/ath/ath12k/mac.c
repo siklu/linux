@@ -13599,6 +13599,7 @@ void ath12k_mac_op_sta_statistics(struct ieee80211_hw *hw,
 	struct ath12k_dp_link_peer_rate_info rate_info = {};
 	struct ath12k_fw_stats_req_params params = {};
 	struct ath12k_dp_link_peer *peer;
+	struct ath12k_link_vif *arvif;
 	struct ath12k_link_sta *arsta;
 	s8 signal, noise_floor;
 	struct ath12k_dp *dp;
@@ -13611,6 +13612,8 @@ void ath12k_mac_op_sta_statistics(struct ieee80211_hw *hw,
 	ar = ath12k_get_ar_by_vif(hw, vif, arsta->link_id);
 	if (!ar)
 		return;
+
+	arvif = wiphy_dereference(hw->wiphy, ahsta->ahvif->link[arsta->link_id]);
 
 	dp = ath12k_ab_to_dp(ar->ab);
 	ath12k_dp_link_peer_get_sta_rate_info_stats(dp, arsta->addr, &rate_info);
@@ -13644,23 +13647,31 @@ void ath12k_mac_op_sta_statistics(struct ieee80211_hw *hw,
 	/* TODO: Use real NF instead of default one. */
 	signal = rate_info.rssi_comb;
 
-	params.pdev_id = ath12k_mac_get_target_pdev_id(ar);
-	params.vdev_id = 0;
-	params.stats_id = WMI_REQUEST_VDEV_STAT;
+	/* The firmware indexes the requested stats by vdev id, so the id of the
+	 * link vif this link sta belongs to has to be used. Assuming vdev id 0
+	 * only works when a single radio is attached to the device: with
+	 * multiple radios per device the vdev ids come from a map shared by all
+	 * of them (see ab->free_vdev_map), so at most one radio can own vdev 0.
+	 */
+	if (arvif && arvif->is_created) {
+		params.pdev_id = ath12k_mac_get_target_pdev_id(ar);
+		params.vdev_id = arvif->vdev_id;
+		params.stats_id = WMI_REQUEST_VDEV_STAT;
 
-	if (!signal &&
-	    ahsta->ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
-	    !(ath12k_mac_get_fw_stats(ar, &params))) {
-		signal = arsta->rssi_beacon;
-		ath12k_fw_stats_reset(ar);
-	}
+		if (!signal &&
+		    ahsta->ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
+		    !(ath12k_mac_get_fw_stats(ar, &params))) {
+			signal = arsta->rssi_beacon;
+			ath12k_fw_stats_reset(ar);
+		}
 
-	params.stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
-	if (!(sinfo->filled & BIT_ULL(NL80211_STA_INFO_CHAIN_SIGNAL)) &&
-	    ahsta->ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
-	    !(ath12k_mac_get_fw_stats(ar, &params))) {
-		ath12k_mac_put_chain_rssi(sinfo, arsta);
-		ath12k_fw_stats_reset(ar);
+		params.stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
+		if (!(sinfo->filled & BIT_ULL(NL80211_STA_INFO_CHAIN_SIGNAL)) &&
+		    ahsta->ahvif->vdev_type == WMI_VDEV_TYPE_STA &&
+		    !(ath12k_mac_get_fw_stats(ar, &params))) {
+			ath12k_mac_put_chain_rssi(sinfo, arsta);
+			ath12k_fw_stats_reset(ar);
+		}
 	}
 
 	spin_lock_bh(&ar->data_lock);
@@ -13703,6 +13714,7 @@ void ath12k_mac_op_link_sta_statistics(struct ieee80211_hw *hw,
 	struct ath12k_sta *ahsta = ath12k_sta_to_ahsta(link_sta->sta);
 	struct ath12k_fw_stats_req_params params = {};
 	struct ath12k_dp_link_peer *peer;
+	struct ath12k_link_vif *arvif;
 	struct ath12k_link_sta *arsta;
 	struct ath12k *ar;
 	s8 signal;
@@ -13718,6 +13730,8 @@ void ath12k_mac_op_link_sta_statistics(struct ieee80211_hw *hw,
 	ar = ath12k_get_ar_by_vif(hw, vif, arsta->link_id);
 	if (!ar)
 		return;
+
+	arvif = wiphy_dereference(hw->wiphy, ahsta->ahvif->link[arsta->link_id]);
 
 	db2dbm = test_bit(WMI_TLV_SERVICE_HW_DB2DBM_CONVERSION_SUPPORT,
 			  ar->ab->wmi_ab.svc_map);
@@ -13771,9 +13785,10 @@ void ath12k_mac_op_link_sta_statistics(struct ieee80211_hw *hw,
 
 	spin_unlock_bh(&ar->ab->dp->dp_lock);
 
-	if (!signal && ahsta->ahvif->vdev_type == WMI_VDEV_TYPE_STA) {
+	if (!signal && arvif && arvif->is_created &&
+	    ahsta->ahvif->vdev_type == WMI_VDEV_TYPE_STA) {
 		params.pdev_id = ath12k_mac_get_target_pdev_id(ar);
-		params.vdev_id = 0;
+		params.vdev_id = arvif->vdev_id;
 		params.stats_id = WMI_REQUEST_VDEV_STAT;
 
 		if (!ath12k_mac_get_fw_stats(ar, &params)) {

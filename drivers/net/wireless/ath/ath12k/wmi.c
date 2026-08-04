@@ -7791,6 +7791,22 @@ static void ath12k_peer_assoc_conf_event(struct ath12k_base *ab, struct sk_buff 
 	rcu_read_unlock();
 }
 
+/* Firmware reports the statistics of all the active vdevs of the device
+ * irrespective of the pdev they belong to, so the vdevs owned by the other
+ * radios legitimately show up here. Skip them without letting
+ * ath12k_mac_get_arvif() complain, and reject out of range ids since the
+ * vdev id comes straight from firmware and is used to build a bit mask.
+ */
+static struct ath12k_link_vif *ath12k_wmi_get_own_arvif(struct ath12k *ar,
+							u32 vdev_id)
+{
+	if (vdev_id >= BITS_PER_TYPE(ar->allocated_vdev_map) ||
+	    !(ar->allocated_vdev_map & (1LL << vdev_id)))
+		return NULL;
+
+	return ath12k_mac_get_arvif(ar, vdev_id);
+}
+
 static void
 ath12k_wmi_fw_vdev_stats_dump(struct ath12k *ar,
 			      struct ath12k_fw_stats *fw_stats,
@@ -7810,7 +7826,7 @@ ath12k_wmi_fw_vdev_stats_dump(struct ath12k *ar,
 			 "=================");
 
 	list_for_each_entry(vdev, &fw_stats->vdevs, list) {
-		arvif = ath12k_mac_get_arvif(ar, vdev->vdev_id);
+		arvif = ath12k_wmi_get_own_arvif(ar, vdev->vdev_id);
 		if (!arvif)
 			continue;
 		vif_macaddr = arvif->ahvif->vif->addr;
@@ -8249,7 +8265,6 @@ static int ath12k_wmi_tlv_fw_stats_data_parse(struct ath12k_base *ab,
 	for (i = 0; i < le32_to_cpu(ev->num_vdev_stats); i++) {
 		const struct wmi_vdev_stats_params *src;
 		struct ath12k_fw_stats_vdev *dst;
-		u32 vdev_id;
 
 		src = data;
 		if (len < sizeof(*src)) {
@@ -8257,14 +8272,7 @@ static int ath12k_wmi_tlv_fw_stats_data_parse(struct ath12k_base *ab,
 			goto exit;
 		}
 
-		/* Firmware reports the stats of all the active vdevs of the
-		 * device irrespective of the pdev they belong to, so skip the
-		 * ones this radio does not own instead of letting the lookup
-		 * below complain about them.
-		 */
-		vdev_id = le32_to_cpu(src->vdev_id);
-		arvif = (ar->allocated_vdev_map & (1LL << vdev_id)) ?
-			ath12k_mac_get_arvif(ar, vdev_id) : NULL;
+		arvif = ath12k_wmi_get_own_arvif(ar, le32_to_cpu(src->vdev_id));
 		if (arvif) {
 			spin_lock_bh(&ab->base_lock);
 			arsta = ath12k_link_sta_find_by_addr(ab, arvif->bssid);

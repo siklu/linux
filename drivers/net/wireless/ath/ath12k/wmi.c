@@ -7791,22 +7791,6 @@ static void ath12k_peer_assoc_conf_event(struct ath12k_base *ab, struct sk_buff 
 	rcu_read_unlock();
 }
 
-/* Firmware reports the statistics of all the active vdevs of the device
- * irrespective of the pdev they belong to, so the vdevs owned by the other
- * radios legitimately show up here. Skip them without letting
- * ath12k_mac_get_arvif() complain, and reject out of range ids since the
- * vdev id comes straight from firmware and is used to build a bit mask.
- */
-static struct ath12k_link_vif *ath12k_wmi_get_own_arvif(struct ath12k *ar,
-							u32 vdev_id)
-{
-	if (vdev_id >= BITS_PER_TYPE(ar->allocated_vdev_map) ||
-	    !(ar->allocated_vdev_map & (1LL << vdev_id)))
-		return NULL;
-
-	return ath12k_mac_get_arvif(ar, vdev_id);
-}
-
 static void
 ath12k_wmi_fw_vdev_stats_dump(struct ath12k *ar,
 			      struct ath12k_fw_stats *fw_stats,
@@ -7826,7 +7810,7 @@ ath12k_wmi_fw_vdev_stats_dump(struct ath12k *ar,
 			 "=================");
 
 	list_for_each_entry(vdev, &fw_stats->vdevs, list) {
-		arvif = ath12k_wmi_get_own_arvif(ar, vdev->vdev_id);
+		arvif = ath12k_mac_get_arvif(ar, vdev->vdev_id);
 		if (!arvif)
 			continue;
 		vif_macaddr = arvif->ahvif->vif->addr;
@@ -8272,7 +8256,7 @@ static int ath12k_wmi_tlv_fw_stats_data_parse(struct ath12k_base *ab,
 			goto exit;
 		}
 
-		arvif = ath12k_wmi_get_own_arvif(ar, le32_to_cpu(src->vdev_id));
+		arvif = ath12k_mac_get_arvif(ar, le32_to_cpu(src->vdev_id));
 		if (arvif) {
 			spin_lock_bh(&ab->base_lock);
 			arsta = ath12k_link_sta_find_by_addr(ab, arvif->bssid);
@@ -8372,19 +8356,8 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 	if (!stats)
 		return -EINVAL;
 
-	if (len < sizeof(*stats_rssi))
-		return -EPROTO;
-
 	stats->pdev_id = le32_to_cpu(ev->pdev_id);
 	vdev_id = le32_to_cpu(stats_rssi->vdev_id);
-
-	/* Claim the event before any of the lookups below can bail out.
-	 * ath12k_update_stats_event() keys the completion of the waiting
-	 * requester off this, so leaving it unset on a miss makes the
-	 * requester wait for its full timeout instead of failing fast.
-	 */
-	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
-
 	guard(rcu)();
 	ar = ath12k_mac_get_ar_by_pdev_id(ab, stats->pdev_id);
 	if (!ar) {
@@ -8393,29 +8366,31 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 		return -EPROTO;
 	}
 
-	/* Firmware does not necessarily populate this record. QCN9274 in split
-	 * PHY mode leaves both the vdev id and the peer address at zero and
-	 * reports no per chain values at all, so the lookup below only happens
-	 * to succeed on the radio that owns vdev 0, and even there it just
-	 * stores zeroes that ath12k_mac_put_chain_rssi() filters back out.
-	 * Treat a vdev that this radio does not own as "no per chain rssi
-	 * available" rather than as a malformed event: failing the parse would
-	 * leave the requester waiting for its full timeout with the wiphy lock
-	 * held, once per station statistics poll.
+	/* Claim the event before any lookup below can bail out.
+	 * ath12k_update_stats_event() keys the requester's completion off this,
+	 * so leaving it unset makes the requester wait out its full timeout.
 	 */
-	arvif = ath12k_wmi_get_own_arvif(ar, vdev_id);
-	if (!arvif) {
+	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
+
+	/* Firmware does not necessarily populate this record: QCN9274 in split
+	 * PHY mode reports vdev id 0 and no per chain values at all, so on a
+	 * device with more than one radio the id only matches the radio that
+	 * owns vdev 0. That is a firmware quirk rather than a malformed event,
+	 * so report the per chain rssi as unavailable instead of failing the
+	 * parse, which would stall the requester for a full timeout with the
+	 * wiphy lock held on every station statistics poll.
+	 */
+	arvif = ath12k_mac_get_arvif_by_vdev_id(ab, vdev_id);
+	if (!arvif || arvif->ar != ar) {
 		ath12k_dbg(ab, ATH12K_DBG_WMI,
-			   "no vif on pdev %d for vdev id %d in rssi chain (peer %pM)\n",
-			   stats->pdev_id, vdev_id,
-			   stats_rssi->peer_macaddr.addr);
+			   "no vif on pdev %d for vdev id %d in rssi chain\n",
+			   stats->pdev_id, vdev_id);
 		return 0;
 	}
 
 	ath12k_dbg(ab, ATH12K_DBG_WMI,
-		   "stats bssid %pM vif %p peer %pM\n",
-		   arvif->bssid, arvif->ahvif->vif,
-		   stats_rssi->peer_macaddr.addr);
+		   "stats bssid %pM vif %p\n",
+		   arvif->bssid, arvif->ahvif->vif);
 
 	guard(spinlock_bh)(&ab->base_lock);
 	arsta = ath12k_link_sta_find_by_addr(ab, arvif->bssid);

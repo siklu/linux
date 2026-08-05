@@ -8393,17 +8393,22 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 		return -EPROTO;
 	}
 
-	/* A vdev id that this radio does not own is a firmware quirk rather
-	 * than a malformed event, so report the per chain rssi as unavailable
-	 * instead of failing the whole event. Log the peer the record actually
-	 * refers to, it is the only way to tell which vdev firmware meant.
+	/* Firmware does not necessarily populate this record. QCN9274 in split
+	 * PHY mode leaves both the vdev id and the peer address at zero and
+	 * reports no per chain values at all, so the lookup below only happens
+	 * to succeed on the radio that owns vdev 0, and even there it just
+	 * stores zeroes that ath12k_mac_put_chain_rssi() filters back out.
+	 * Treat a vdev that this radio does not own as "no per chain rssi
+	 * available" rather than as a malformed event: failing the parse would
+	 * leave the requester waiting for its full timeout with the wiphy lock
+	 * held, once per station statistics poll.
 	 */
 	arvif = ath12k_wmi_get_own_arvif(ar, vdev_id);
 	if (!arvif) {
-		ath12k_warn(ab,
-			    "no vif on pdev %d for vdev id %d in rssi chain (peer %pM)\n",
-			    stats->pdev_id, vdev_id,
-			    stats_rssi->peer_macaddr.addr);
+		ath12k_dbg(ab, ATH12K_DBG_WMI,
+			   "no vif on pdev %d for vdev id %d in rssi chain (peer %pM)\n",
+			   stats->pdev_id, vdev_id,
+			   stats_rssi->peer_macaddr.addr);
 		return 0;
 	}
 

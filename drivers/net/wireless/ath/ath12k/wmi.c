@@ -8372,8 +8372,19 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 	if (!stats)
 		return -EINVAL;
 
+	if (len < sizeof(*stats_rssi))
+		return -EPROTO;
+
 	stats->pdev_id = le32_to_cpu(ev->pdev_id);
 	vdev_id = le32_to_cpu(stats_rssi->vdev_id);
+
+	/* Claim the event before any of the lookups below can bail out.
+	 * ath12k_update_stats_event() keys the completion of the waiting
+	 * requester off this, so leaving it unset on a miss makes the
+	 * requester wait for its full timeout instead of failing fast.
+	 */
+	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
+
 	guard(rcu)();
 	ar = ath12k_mac_get_ar_by_pdev_id(ab, stats->pdev_id);
 	if (!ar) {
@@ -8382,15 +8393,24 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 		return -EPROTO;
 	}
 
-	arvif = ath12k_mac_get_arvif(ar, vdev_id);
+	/* A vdev id that this radio does not own is a firmware quirk rather
+	 * than a malformed event, so report the per chain rssi as unavailable
+	 * instead of failing the whole event. Log the peer the record actually
+	 * refers to, it is the only way to tell which vdev firmware meant.
+	 */
+	arvif = ath12k_wmi_get_own_arvif(ar, vdev_id);
 	if (!arvif) {
-		ath12k_warn(ab, "not found vif for vdev id %d\n", vdev_id);
-		return -EPROTO;
+		ath12k_warn(ab,
+			    "no vif on pdev %d for vdev id %d in rssi chain (peer %pM)\n",
+			    stats->pdev_id, vdev_id,
+			    stats_rssi->peer_macaddr.addr);
+		return 0;
 	}
 
 	ath12k_dbg(ab, ATH12K_DBG_WMI,
-		   "stats bssid %pM vif %p\n",
-		   arvif->bssid, arvif->ahvif->vif);
+		   "stats bssid %pM vif %p peer %pM\n",
+		   arvif->bssid, arvif->ahvif->vif,
+		   stats_rssi->peer_macaddr.addr);
 
 	guard(spinlock_bh)(&ab->base_lock);
 	arsta = ath12k_link_sta_find_by_addr(ab, arvif->bssid);
@@ -8398,7 +8418,7 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 		ath12k_warn(ab,
 			    "not found link sta with bssid %pM for rssi chain\n",
 			    arvif->bssid);
-		return -EPROTO;
+		return 0;
 	}
 
 	BUILD_BUG_ON(ARRAY_SIZE(arsta->chain_signal) >
@@ -8406,8 +8426,6 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 
 	for (j = 0; j < ARRAY_SIZE(arsta->chain_signal); j++)
 		arsta->chain_signal[j] = le32_to_cpu(stats_rssi->rssi_avg_beacon[j]);
-
-	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
 
 	return 0;
 }

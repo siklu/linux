@@ -8366,10 +8366,26 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 		return -EPROTO;
 	}
 
-	arvif = ath12k_mac_get_arvif(ar, vdev_id);
-	if (!arvif) {
-		ath12k_warn(ab, "not found vif for vdev id %d\n", vdev_id);
-		return -EPROTO;
+	/* Claim the event before any lookup below can bail out.
+	 * ath12k_update_stats_event() keys the requester's completion off this,
+	 * so leaving it unset makes the requester wait out its full timeout.
+	 */
+	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
+
+	/* Firmware does not necessarily populate this record: QCN9274 in split
+	 * PHY mode reports vdev id 0 and no per chain values at all, so on a
+	 * device with more than one radio the id only matches the radio that
+	 * owns vdev 0. That is a firmware quirk rather than a malformed event,
+	 * so report the per chain rssi as unavailable instead of failing the
+	 * parse, which would stall the requester for a full timeout with the
+	 * wiphy lock held on every station statistics poll.
+	 */
+	arvif = ath12k_mac_get_arvif_by_vdev_id(ab, vdev_id);
+	if (!arvif || arvif->ar != ar) {
+		ath12k_dbg(ab, ATH12K_DBG_WMI,
+			   "no vif on pdev %d for vdev id %d in rssi chain\n",
+			   stats->pdev_id, vdev_id);
+		return 0;
 	}
 
 	ath12k_dbg(ab, ATH12K_DBG_WMI,
@@ -8382,7 +8398,7 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 		ath12k_warn(ab,
 			    "not found link sta with bssid %pM for rssi chain\n",
 			    arvif->bssid);
-		return -EPROTO;
+		return 0;
 	}
 
 	BUILD_BUG_ON(ARRAY_SIZE(arsta->chain_signal) >
@@ -8390,8 +8406,6 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 
 	for (j = 0; j < ARRAY_SIZE(arsta->chain_signal); j++)
 		arsta->chain_signal[j] = le32_to_cpu(stats_rssi->rssi_avg_beacon[j]);
-
-	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
 
 	return 0;
 }

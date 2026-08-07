@@ -1375,6 +1375,11 @@ static int phylink_change_inband_advert(struct phylink *pl)
 	phylink_pcs_neg_mode(pl, pl->pcs, pl->link_config.interface,
 			     pl->link_config.advertising);
 
+	phylink_info(pl,
+		     "change_inband_advert: pcs_neg_mode=%u interface=%s adv=%*pb\n",
+		     pl->pcs_neg_mode, phy_modes(pl->link_config.interface),
+		     __ETHTOOL_LINK_MODE_MASK_NBITS, pl->link_config.advertising);
+
 	/* Modern PCS-based method; update the advert at the PCS, and
 	 * restart negotiation if the pcs_config() helper indicates that
 	 * the programmed advertisement has changed.
@@ -2853,6 +2858,24 @@ int phylink_ethtool_ksettings_get(struct phylink *pl,
 		 */
 		phylink_get_ksettings(&link_state, kset);
 		break;
+
+	default:
+		/* MLO_AN_PHY without a PHY device: the interface is not yet
+		 * fully configured (e.g. waiting for an SFP module to be
+		 * detected and its state machine to run). Return the current
+		 * link_config state so that userspace sees a consistent
+		 * picture and, crucially, does not observe autoneg=false and
+		 * perform a read-modify-write that forces autoneg off before
+		 * the SFP initialisation completes.
+		 */
+		if (!pl->phydev) {
+			phylink_info(pl,
+				    "ksettings_get: pre-init state, returning link_config (interface=%s, caller=%s[%d])\n",
+				    phy_modes(pl->link_config.interface),
+				    current->comm, current->pid);
+			phylink_get_ksettings(&pl->link_config, kset);
+		}
+		break;
 	}
 
 	return 0;
@@ -3002,6 +3025,12 @@ int phylink_ethtool_ksettings_set(struct phylink *pl,
 				    __ETHTOOL_LINK_MODE_MASK_NBITS, support);
 			return -EINVAL;
 		}
+
+		phylink_info(pl,
+			     "ksettings_set: SFP write accepted (interface=%s, adv=%*pb, caller=%s[%d])\n",
+			     phy_modes(config.interface),
+			     __ETHTOOL_LINK_MODE_MASK_NBITS, config.advertising,
+			     current->comm, current->pid);
 	} else {
 		/* Validate without changing the current supported mask. */
 		linkmode_copy(support, pl->supported);

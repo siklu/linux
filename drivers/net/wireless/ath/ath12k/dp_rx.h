@@ -257,6 +257,7 @@ struct sk_buff *ath12k_dp_rx_get_msdu_last_buf(struct sk_buff_head *msdu_list,
 					       struct sk_buff *first);
 void ath12k_dp_reo_cmd_free(struct ath12k_dp *dp, void *ctx,
 			    enum hal_reo_cmd_status status);
+void ath12k_dp_reoq_quarantine_init(struct ath12k_dp *dp);
 void ath12k_dp_rx_tid_del_func(struct ath12k_dp *dp, void *ctx,
 			       enum hal_reo_cmd_status status);
 void ath12k_dp_rx_process_reo_cmd_update_rx_queue_list(struct ath12k_dp *dp);

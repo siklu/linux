@@ -223,23 +223,43 @@ int ath12k_wifi7_peer_rx_tid_reo_update(struct ath12k_dp *dp,
 int ath12k_wifi7_dp_reo_cache_flush(struct ath12k_base *ab,
 				    struct ath12k_dp_rx_tid_rxq *rx_tid)
 {
+	dma_addr_t paddr = rx_tid->qbuf.paddr_aligned;
 	struct ath12k_hal_reo_cmd cmd = {};
+	u32 off = rx_tid->qbuf.size;
 	int ret;
 
-	cmd.addr_lo = lower_32_bits(rx_tid->qbuf.paddr_aligned);
-	cmd.addr_hi = upper_32_bits(rx_tid->qbuf.paddr_aligned);
+	/* A FLUSH_QUEUE_1K_DESC flush of the base address does not write
+	 * back all extension descriptors, which REO updates on every
+	 * enqueue and dequeue, so flush each 128-byte segment above the
+	 * base descriptor explicitly first. REO executes commands in
+	 * order, hence the status of the base flush also covers these.
+	 */
+	while (off > HAL_LINK_DESC_ALIGN) {
+		off -= HAL_LINK_DESC_ALIGN;
+		cmd.addr_lo = lower_32_bits(paddr + off);
+		cmd.addr_hi = upper_32_bits(paddr + off);
+		ret = ath12k_wifi7_dp_reo_cmd_send(ab, rx_tid,
+						   HAL_REO_CMD_FLUSH_CACHE,
+						   &cmd, NULL);
+		if (ret) {
+			ath12k_warn(ab,
+				    "failed to send FLUSH_CACHE for tid %d offset 0x%x: %d\n",
+				    rx_tid->tid, off, ret);
+			return ret;
+		}
+	}
+
+	cmd.addr_lo = lower_32_bits(paddr);
+	cmd.addr_hi = upper_32_bits(paddr);
 	/* HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS - all pending MPDUs
 	 *in the bitmap will be forwarded/flushed to REO output rings
 	 */
 	cmd.flag = HAL_REO_CMD_FLG_NEED_STATUS |
 		   HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS;
 
-	/* For all QoS TIDs (except NON_QOS), the driver allocates a maximum
-	 * window size of 1024. In such cases, the driver can issue a single
-	 * 1KB descriptor flush command instead of sending multiple 128-byte
-	 * flush commands for each QoS TID, improving efficiency.
+	/* QoS TID queues are sized for a 1024 window: keep the 1K flag so
+	 * the base flush covers the queue's 1K bitmap as well.
 	 */
-
 	if (rx_tid->tid != HAL_DESC_REO_NON_QOS_TID)
 		cmd.flag |= HAL_REO_CMD_FLG_FLUSH_QUEUE_1K_DESC;
 

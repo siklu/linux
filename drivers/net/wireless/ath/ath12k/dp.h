@@ -11,7 +11,6 @@
 #include "dp_htt.h"
 #include "dp_cmn.h"
 #include <linux/rhashtable.h>
-#include <linux/workqueue.h>
 
 #define MAX_RXDMA_PER_PDEV     2
 
@@ -490,12 +489,6 @@ struct ath12k_dp {
 	 * - reo_cmd_list
 	 */
 	spinlock_t reo_cmd_lock;
-	/* VER-1345 debug: freed REO queue descriptors held back for
-	 * reoq_quarantine_ms to catch REO writes after the free
-	 */
-	struct list_head reoq_quarantine_list;
-	spinlock_t reoq_quarantine_lock;
-	struct delayed_work reoq_quarantine_work;
 	struct ath12k_hp_update_timer reo_cmd_timer;
 	struct ath12k_hp_update_timer tx_ring_timer[DP_TCL_NUM_RING_MAX];
 	struct ath12k_spt_info *spt_info;

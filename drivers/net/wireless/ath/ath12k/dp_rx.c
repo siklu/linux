@@ -366,200 +366,6 @@ static void ath12k_dp_rx_tid_cleanup(struct ath12k_base *ab,
 	}
 }
 
-/* VER-1345 debug: instead of freeing a REO queue descriptor as soon as its
- * final FLUSH_CACHE completes, fill it with a poison pattern and keep it
- * mapped for reoq_quarantine_ms. Any byte that changes in that window was
- * written by the hardware after the point where the driver frees the
- * buffer, which is the memory corruption VER-1345 is suspected to be.
- */
-static unsigned int ath12k_reoq_quarantine_ms = 60000;
-module_param_named(reoq_quarantine_ms, ath12k_reoq_quarantine_ms, uint, 0644);
-MODULE_PARM_DESC(reoq_quarantine_ms,
-		 "VER-1345 debug: hold freed REO queue descriptors this long and report HW writes to them (0 = off)");
-
-static unsigned int ath12k_reoq_qchk_freed;
-module_param_named(reoq_qchk_freed, ath12k_reoq_qchk_freed, uint, 0444);
-MODULE_PARM_DESC(reoq_qchk_freed,
-		 "VER-1345 debug: REO queue descriptors released from quarantine");
-
-static unsigned int ath12k_reoq_qchk_dirty;
-module_param_named(reoq_qchk_dirty, ath12k_reoq_qchk_dirty, uint, 0444);
-MODULE_PARM_DESC(reoq_qchk_dirty,
-		 "VER-1345 debug: quarantined REO queue descriptors written by HW after their final flush");
-
-static unsigned int ath12k_reoq_flush_busy;
-module_param_named(reoq_flush_busy, ath12k_reoq_flush_busy, uint, 0444);
-MODULE_PARM_DESC(reoq_flush_busy,
-		 "VER-1345 debug: REO cache flush sequences that could not be queued and were retried");
-
-#define ATH12K_REOQ_POISON		0xa5
-#define ATH12K_REOQ_QCHK_PERIOD_MS	1000
-#define ATH12K_REOQ_QCHK_MAX_DUMPS	16
-
-struct ath12k_reoq_quarantine_elem {
-	struct list_head list;
-	struct ath12k_reoq_buf qbuf;
-	unsigned long ts;
-	/* bit n set: HW wrote to the 128-byte line at offset n * 0x80 */
-	unsigned long dirty;
-	enum hal_reo_cmd_status status;
-	u8 tid;
-};
-
-static void ath12k_dp_reoq_quarantine_check(struct ath12k_base *ab,
-					    struct ath12k_reoq_quarantine_elem *q)
-{
-	u8 *buf = PTR_ALIGN((u8 *)q->qbuf.vaddr, HAL_LINK_DESC_ALIGN);
-	unsigned int lines = min_t(unsigned int,
-				   q->qbuf.size / HAL_LINK_DESC_ALIGN,
-				   BITS_PER_LONG);
-	unsigned long dirty = 0, new;
-	char prefix[24];
-	unsigned int i;
-
-	dma_sync_single_for_cpu(ab->dev, q->qbuf.paddr_aligned, q->qbuf.size,
-				DMA_BIDIRECTIONAL);
-
-	for (i = 0; i < lines; i++)
-		if (memchr_inv(buf + i * HAL_LINK_DESC_ALIGN, ATH12K_REOQ_POISON,
-			       HAL_LINK_DESC_ALIGN))
-			dirty |= BIT(i);
-
-	new = dirty & ~q->dirty;
-	if (!new)
-		return;
-
-	if (!q->dirty)
-		ath12k_reoq_qchk_dirty++;
-	q->dirty = dirty;
-
-	ath12k_warn(ab,
-		    "reoq quarantine: tid %u paddr %pad size 0x%x flush status %d: HW wrote lines 0x%lx (bit n = offset n*0x80), seen %u ms after free\n",
-		    q->tid, &q->qbuf.paddr_aligned, q->qbuf.size, q->status,
-		    new, jiffies_to_msecs(jiffies - q->ts));
-
-	if (ath12k_reoq_qchk_dirty > ATH12K_REOQ_QCHK_MAX_DUMPS)
-		return;
-
-	for_each_set_bit(i, &new, lines) {
-		snprintf(prefix, sizeof(prefix), "reoq +0x%03x: ",
-			 i * HAL_LINK_DESC_ALIGN);
-		print_hex_dump(KERN_WARNING, prefix, DUMP_PREFIX_NONE, 16, 4,
-			       buf + i * HAL_LINK_DESC_ALIGN,
-			       HAL_LINK_DESC_ALIGN, false);
-	}
-}
-
-static void ath12k_dp_reoq_quarantine_release(struct ath12k_base *ab,
-					      struct ath12k_reoq_quarantine_elem *q)
-{
-	ath12k_dp_reoq_quarantine_check(ab, q);
-	ath12k_reoq_qchk_freed++;
-	ath12k_dp_rx_tid_cleanup(ab, &q->qbuf);
-	kfree(q);
-}
-
-static void ath12k_dp_reoq_quarantine_work(struct work_struct *work)
-{
-	struct ath12k_dp *dp = container_of(to_delayed_work(work),
-					    struct ath12k_dp,
-					    reoq_quarantine_work);
-	unsigned long hold = msecs_to_jiffies(READ_ONCE(ath12k_reoq_quarantine_ms));
-	struct ath12k_reoq_quarantine_elem *q, *tmp;
-	LIST_HEAD(held);
-	bool pending;
-
-	/* Only this work removes entries, so check them without the lock
-	 * and put the survivors back ahead of anything added meanwhile.
-	 */
-	spin_lock_bh(&dp->reoq_quarantine_lock);
-	list_splice_init(&dp->reoq_quarantine_list, &held);
-	spin_unlock_bh(&dp->reoq_quarantine_lock);
-
-	list_for_each_entry_safe(q, tmp, &held, list) {
-		if (time_after_eq(jiffies, q->ts + hold)) {
-			list_del(&q->list);
-			ath12k_dp_reoq_quarantine_release(dp->ab, q);
-		} else {
-			ath12k_dp_reoq_quarantine_check(dp->ab, q);
-		}
-	}
-
-	spin_lock_bh(&dp->reoq_quarantine_lock);
-	list_splice(&held, &dp->reoq_quarantine_list);
-	pending = !list_empty(&dp->reoq_quarantine_list);
-	spin_unlock_bh(&dp->reoq_quarantine_lock);
-
-	if (pending)
-		schedule_delayed_work(&dp->reoq_quarantine_work,
-				      msecs_to_jiffies(ATH12K_REOQ_QCHK_PERIOD_MS));
-}
-
-/* Takes ownership of rx_tid->qbuf and returns true if quarantine is on */
-static bool ath12k_dp_reoq_quarantine_add(struct ath12k_dp *dp,
-					  struct ath12k_dp_rx_tid_rxq *rx_tid,
-					  enum hal_reo_cmd_status status)
-{
-	struct ath12k_reoq_quarantine_elem *q;
-	struct ath12k_base *ab = dp->ab;
-	u8 *buf;
-
-	if (!READ_ONCE(ath12k_reoq_quarantine_ms) || !rx_tid->qbuf.vaddr)
-		return false;
-
-	q = kzalloc(sizeof(*q), GFP_ATOMIC);
-	if (!q)
-		return false;
-
-	q->qbuf = rx_tid->qbuf;
-	q->tid = rx_tid->tid;
-	q->status = status;
-	rx_tid->qbuf.vaddr = NULL;
-
-	/* Write the poison back to memory; the buffer stays mapped */
-	buf = PTR_ALIGN((u8 *)q->qbuf.vaddr, HAL_LINK_DESC_ALIGN);
-	dma_sync_single_for_cpu(ab->dev, q->qbuf.paddr_aligned, q->qbuf.size,
-				DMA_BIDIRECTIONAL);
-	memset(buf, ATH12K_REOQ_POISON, q->qbuf.size);
-	dma_sync_single_for_device(ab->dev, q->qbuf.paddr_aligned, q->qbuf.size,
-				   DMA_BIDIRECTIONAL);
-	q->ts = jiffies;
-
-	spin_lock_bh(&dp->reoq_quarantine_lock);
-	list_add_tail(&q->list, &dp->reoq_quarantine_list);
-	spin_unlock_bh(&dp->reoq_quarantine_lock);
-
-	schedule_delayed_work(&dp->reoq_quarantine_work,
-			      msecs_to_jiffies(ATH12K_REOQ_QCHK_PERIOD_MS));
-
-	return true;
-}
-
-static void ath12k_dp_reoq_quarantine_drain(struct ath12k_dp *dp)
-{
-	struct ath12k_reoq_quarantine_elem *q, *tmp;
-	LIST_HEAD(held);
-
-	cancel_delayed_work_sync(&dp->reoq_quarantine_work);
-
-	spin_lock_bh(&dp->reoq_quarantine_lock);
-	list_splice_init(&dp->reoq_quarantine_list, &held);
-	spin_unlock_bh(&dp->reoq_quarantine_lock);
-
-	list_for_each_entry_safe(q, tmp, &held, list) {
-		list_del(&q->list);
-		ath12k_dp_reoq_quarantine_release(dp->ab, q);
-	}
-}
-
-void ath12k_dp_reoq_quarantine_init(struct ath12k_dp *dp)
-{
-	INIT_LIST_HEAD(&dp->reoq_quarantine_list);
-	spin_lock_init(&dp->reoq_quarantine_lock);
-	INIT_DELAYED_WORK(&dp->reoq_quarantine_work,
-			  ath12k_dp_reoq_quarantine_work);
-}
-
 void ath12k_dp_rx_reo_cmd_list_cleanup(struct ath12k_base *ab)
 {
 	struct ath12k_dp *dp = ath12k_ab_to_dp(ab);
@@ -590,8 +396,6 @@ void ath12k_dp_rx_reo_cmd_list_cleanup(struct ath12k_base *ab)
 		kfree(cmd);
 	}
 	spin_unlock_bh(&dp->reo_cmd_lock);
-
-	ath12k_dp_reoq_quarantine_drain(dp);
 }
 
 void ath12k_dp_reo_cmd_free(struct ath12k_dp *dp, void *ctx,
@@ -602,9 +406,6 @@ void ath12k_dp_reo_cmd_free(struct ath12k_dp *dp, void *ctx,
 	if (status != HAL_REO_CMD_SUCCESS)
 		ath12k_warn(dp->ab, "failed to flush rx tid hw desc, tid %d status %d\n",
 			    rx_tid->tid, status);
-
-	if (ath12k_dp_reoq_quarantine_add(dp, rx_tid, status))
-		return;
 
 	ath12k_dp_rx_tid_cleanup(dp->ab, &rx_tid->qbuf);
 }
@@ -688,10 +489,8 @@ void ath12k_dp_rx_tid_del_func(struct ath12k_dp *dp, void *ctx,
 			 * will be called during core destroy.
 			 */
 
-			if (ath12k_dp_arch_reo_cache_flush(dp, &elem->data)) {
-				ath12k_reoq_flush_busy++;
+			if (ath12k_dp_arch_reo_cache_flush(dp, &elem->data))
 				break;
-			}
 
 			list_del(&elem->list);
 			dp->reo_cmd_cache_flush_count--;

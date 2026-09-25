@@ -220,12 +220,6 @@ int ath12k_wifi7_peer_rx_tid_reo_update(struct ath12k_dp *dp,
 	return 0;
 }
 
-/* VER-1345 debug: N restores the single upstream flush command, for A/B */
-static bool ath12k_reo_flush_lines = true;
-module_param_named(reo_flush_lines, ath12k_reo_flush_lines, bool, 0644);
-MODULE_PARM_DESC(reo_flush_lines,
-		 "VER-1345 debug: flush every 128-byte line of a REO queue descriptor before freeing it");
-
 int ath12k_wifi7_dp_reo_cache_flush(struct ath12k_base *ab,
 				    struct ath12k_dp_rx_tid_rxq *rx_tid)
 {
@@ -256,9 +250,6 @@ int ath12k_wifi7_dp_reo_cache_flush(struct ath12k_base *ab,
 	 * flush, which frees the buffer, covers the whole sequence. If a
 	 * command cannot be queued, the caller keeps the element and retries.
 	 */
-	if (!READ_ONCE(ath12k_reo_flush_lines))
-		goto flush_queue_desc;
-
 	cmd.addr_lo = lower_32_bits(paddr);
 	cmd.addr_hi = upper_32_bits(paddr);
 	cmd.flag = flag;
@@ -284,7 +275,6 @@ int ath12k_wifi7_dp_reo_cache_flush(struct ath12k_base *ab,
 		}
 	}
 
-flush_queue_desc:
 	cmd.addr_lo = lower_32_bits(paddr);
 	cmd.addr_hi = upper_32_bits(paddr);
 	cmd.flag = flag | HAL_REO_CMD_FLG_NEED_STATUS;

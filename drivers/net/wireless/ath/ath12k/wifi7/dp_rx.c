@@ -223,30 +223,64 @@ int ath12k_wifi7_peer_rx_tid_reo_update(struct ath12k_dp *dp,
 int ath12k_wifi7_dp_reo_cache_flush(struct ath12k_base *ab,
 				    struct ath12k_dp_rx_tid_rxq *rx_tid)
 {
+	dma_addr_t paddr = rx_tid->qbuf.paddr_aligned;
 	struct ath12k_hal_reo_cmd cmd = {};
+	u32 off = rx_tid->qbuf.size;
+	u32 base_flag = 0;
 	int ret;
 
-	cmd.addr_lo = lower_32_bits(rx_tid->qbuf.paddr_aligned);
-	cmd.addr_hi = upper_32_bits(rx_tid->qbuf.paddr_aligned);
-	/* HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS - all pending MPDUs
-	 *in the bitmap will be forwarded/flushed to REO output rings
+	/* QoS TID queues are sized for a 1024 window: keep the 1K flag so
+	 * the base flushes cover the queue's 1K bitmap as well.
 	 */
-	cmd.flag = HAL_REO_CMD_FLG_NEED_STATUS |
-		   HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS;
-
-	/* For all QoS TIDs (except NON_QOS), the driver allocates a maximum
-	 * window size of 1024. In such cases, the driver can issue a single
-	 * 1KB descriptor flush command instead of sending multiple 128-byte
-	 * flush commands for each QoS TID, improving efficiency.
-	 */
-
 	if (rx_tid->tid != HAL_DESC_REO_NON_QOS_TID)
-		cmd.flag |= HAL_REO_CMD_FLG_FLUSH_QUEUE_1K_DESC;
+		base_flag = HAL_REO_CMD_FLG_FLUSH_QUEUE_1K_DESC;
 
+	/* Forward the MPDUs still held in the queue to the REO output rings
+	 * first. Releasing them walks, and can update, the extension
+	 * descriptors that hold their link pointers, so this has to happen
+	 * before those lines are flushed below.
+	 */
+	cmd.addr_lo = lower_32_bits(paddr);
+	cmd.addr_hi = upper_32_bits(paddr);
+	cmd.flag = base_flag | HAL_REO_CMD_FLG_FLUSH_FWD_ALL_MPDUS;
 	ret = ath12k_wifi7_dp_reo_cmd_send(ab, rx_tid,
 					   HAL_REO_CMD_FLUSH_CACHE,
-					   &cmd, ath12k_dp_reo_cmd_free);
-	return ret;
+					   &cmd, NULL);
+	if (ret)
+		return ret;
+
+	/* A FLUSH_QUEUE_1K_DESC flush of the base address does not write
+	 * back all extension descriptors, so flush each 128-byte segment
+	 * above the base descriptor explicitly.
+	 */
+	cmd.flag = 0;
+	while (off > HAL_LINK_DESC_ALIGN) {
+		off -= HAL_LINK_DESC_ALIGN;
+		cmd.addr_lo = lower_32_bits(paddr + off);
+		cmd.addr_hi = upper_32_bits(paddr + off);
+		ret = ath12k_wifi7_dp_reo_cmd_send(ab, rx_tid,
+						   HAL_REO_CMD_FLUSH_CACHE,
+						   &cmd, NULL);
+		if (ret) {
+			ath12k_warn(ab,
+				    "failed to send FLUSH_CACHE for tid %d offset 0x%x: %d\n",
+				    rx_tid->tid, off, ret);
+			return ret;
+		}
+	}
+
+	/* Flush the base descriptor again, now with status. REO executes
+	 * commands in order, so this status covers the whole sequence. If
+	 * any command cannot be queued, the caller keeps the descriptor and
+	 * retries the sequence later.
+	 */
+	cmd.addr_lo = lower_32_bits(paddr);
+	cmd.addr_hi = upper_32_bits(paddr);
+	cmd.flag = base_flag | HAL_REO_CMD_FLG_NEED_STATUS;
+
+	return ath12k_wifi7_dp_reo_cmd_send(ab, rx_tid,
+					    HAL_REO_CMD_FLUSH_CACHE,
+					    &cmd, ath12k_dp_reo_cmd_free);
 }
 
 int ath12k_wifi7_dp_rx_assign_reoq(struct ath12k_base *ab, struct ath12k_dp_peer *dp_peer,

@@ -8373,14 +8373,20 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
 
 	/* Firmware does not necessarily populate this record: QCN9274 in split
-	 * PHY mode reports vdev id 0 and no per chain values at all, so on a
-	 * device with more than one radio the id only matches the radio that
-	 * owns vdev 0. That is a firmware quirk rather than a malformed event,
-	 * so report the per chain rssi as unavailable instead of failing the
-	 * parse, which would stall the requester for a full timeout with the
-	 * wiphy lock held on every station statistics poll.
+	 * PHY mode sends one record per VDEV of the whole device, with no per
+	 * chain values at all, so on a device with more than one radio some
+	 * records belong to the other radio. That is a firmware quirk rather
+	 * than a malformed event, so report the per chain rssi as unavailable
+	 * instead of failing the parse, which would stall the requester for a
+	 * full timeout with the wiphy lock held on every station statistics
+	 * poll. Check the owning radio first: ath12k_mac_get_arvif() warns for
+	 * a VDEV whose link is not created, e.g. while the other radio's
+	 * station is between connection attempts.
 	 */
-	arvif = ath12k_mac_get_arvif_by_vdev_id(ab, vdev_id);
+	if (ath12k_mac_get_ar_by_vdev_id(ab, vdev_id) != ar)
+		arvif = NULL;
+	else
+		arvif = ath12k_mac_get_arvif_by_vdev_id(ab, vdev_id);
 	if (!arvif || arvif->ar != ar) {
 		ath12k_dbg(ab, ATH12K_DBG_WMI,
 			   "no vif on pdev %d for vdev id %d in rssi chain\n",

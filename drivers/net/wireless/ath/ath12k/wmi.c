@@ -8463,30 +8463,20 @@ static void ath12k_wmi_fw_stats_process(struct ath12k *ar,
 					struct ath12k_fw_stats *stats)
 {
 	struct ath12k_base *ab = ar->ab;
-	struct ath12k_pdev *pdev;
 	bool is_end = true;
-	size_t total_vdevs_started = 0;
-	int i;
 
 	if (stats->stats_id == WMI_REQUEST_VDEV_STAT) {
 		if (list_empty(&stats->vdevs)) {
 			ath12k_warn(ab, "empty vdev stats");
 			return;
 		}
-		/* FW sends all the active VDEV stats irrespective of PDEV,
-		 * hence limit until the count of all VDEVs started
+		/* FW reports only the VDEVs of the requested PDEV: in split PHY
+		 * mode a request on one radio never covers the VDEVs started on
+		 * the other, so wait for this radio's started VDEVs only.
 		 */
-		rcu_read_lock();
-		for (i = 0; i < ab->num_radios; i++) {
-			pdev = rcu_dereference(ab->pdevs_active[i]);
-			if (pdev && pdev->ar)
-				total_vdevs_started += pdev->ar->num_started_vdevs;
-		}
-		rcu_read_unlock();
-
-		if (total_vdevs_started)
+		if (ar->num_started_vdevs)
 			is_end = ((++ar->fw_stats.num_vdev_recvd) ==
-				  total_vdevs_started);
+				  ar->num_started_vdevs);
 
 		list_splice_tail_init(&stats->vdevs,
 				      &ar->fw_stats.vdevs);

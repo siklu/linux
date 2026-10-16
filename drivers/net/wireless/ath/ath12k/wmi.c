@@ -8379,9 +8379,9 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 	 * than a malformed event, so report the per chain rssi as unavailable
 	 * instead of failing the parse, which would stall the requester for a
 	 * full timeout with the wiphy lock held on every station statistics
-	 * poll. Check the owning radio first: ath12k_mac_get_arvif() warns for
-	 * a VDEV whose link is not created, e.g. while the other radio's
-	 * station is between connection attempts.
+	 * poll. Check the owning radio first: ath12k_mac_get_arvif() only
+	 * walks links 0-14 and warns for a scan link VDEV, e.g. while the
+	 * other radio's station scans between connection attempts.
 	 */
 	if (ath12k_mac_get_ar_by_vdev_id(ab, vdev_id) != ar)
 		arvif = NULL;
@@ -8476,9 +8476,10 @@ static void ath12k_wmi_fw_stats_process(struct ath12k *ar,
 			ath12k_warn(ab, "empty vdev stats");
 			return;
 		}
-		/* FW reports only the VDEVs of the requested PDEV: in split PHY
-		 * mode a request on one radio never covers the VDEVs started on
-		 * the other, so wait for this radio's started VDEVs only.
+		/* QCN9274 dual-MAC firmware reports only the VDEVs of the
+		 * requested PDEV, so counting the VDEVs started on the other
+		 * radio made the requester wait out its full timeout. Wait for
+		 * this radio's started VDEVs.
 		 */
 		if (ar->num_started_vdevs)
 			is_end = ((++ar->fw_stats.num_vdev_recvd) ==

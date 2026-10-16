@@ -8373,14 +8373,20 @@ static int ath12k_wmi_tlv_rssi_chain_parse(struct ath12k_base *ab,
 	stats->stats_id = WMI_REQUEST_RSSI_PER_CHAIN_STAT;
 
 	/* Firmware does not necessarily populate this record: QCN9274 in split
-	 * PHY mode reports vdev id 0 and no per chain values at all, so on a
-	 * device with more than one radio the id only matches the radio that
-	 * owns vdev 0. That is a firmware quirk rather than a malformed event,
-	 * so report the per chain rssi as unavailable instead of failing the
-	 * parse, which would stall the requester for a full timeout with the
-	 * wiphy lock held on every station statistics poll.
+	 * PHY mode sends one record per VDEV of the whole device, with no per
+	 * chain values at all, so on a device with more than one radio some
+	 * records belong to the other radio. That is a firmware quirk rather
+	 * than a malformed event, so report the per chain rssi as unavailable
+	 * instead of failing the parse, which would stall the requester for a
+	 * full timeout with the wiphy lock held on every station statistics
+	 * poll. Check the owning radio first: ath12k_mac_get_arvif() only
+	 * walks links 0-14 and warns for a scan link VDEV, e.g. while the
+	 * other radio's station scans between connection attempts.
 	 */
-	arvif = ath12k_mac_get_arvif_by_vdev_id(ab, vdev_id);
+	if (ath12k_mac_get_ar_by_vdev_id(ab, vdev_id) != ar)
+		arvif = NULL;
+	else
+		arvif = ath12k_mac_get_arvif_by_vdev_id(ab, vdev_id);
 	if (!arvif || arvif->ar != ar) {
 		ath12k_dbg(ab, ATH12K_DBG_WMI,
 			   "no vif on pdev %d for vdev id %d in rssi chain\n",
@@ -8463,30 +8469,21 @@ static void ath12k_wmi_fw_stats_process(struct ath12k *ar,
 					struct ath12k_fw_stats *stats)
 {
 	struct ath12k_base *ab = ar->ab;
-	struct ath12k_pdev *pdev;
 	bool is_end = true;
-	size_t total_vdevs_started = 0;
-	int i;
 
 	if (stats->stats_id == WMI_REQUEST_VDEV_STAT) {
 		if (list_empty(&stats->vdevs)) {
 			ath12k_warn(ab, "empty vdev stats");
 			return;
 		}
-		/* FW sends all the active VDEV stats irrespective of PDEV,
-		 * hence limit until the count of all VDEVs started
+		/* QCN9274 dual-MAC firmware reports only the VDEVs of the
+		 * requested PDEV, so counting the VDEVs started on the other
+		 * radio made the requester wait out its full timeout. Wait for
+		 * this radio's started VDEVs.
 		 */
-		rcu_read_lock();
-		for (i = 0; i < ab->num_radios; i++) {
-			pdev = rcu_dereference(ab->pdevs_active[i]);
-			if (pdev && pdev->ar)
-				total_vdevs_started += pdev->ar->num_started_vdevs;
-		}
-		rcu_read_unlock();
-
-		if (total_vdevs_started)
+		if (ar->num_started_vdevs)
 			is_end = ((++ar->fw_stats.num_vdev_recvd) ==
-				  total_vdevs_started);
+				  ar->num_started_vdevs);
 
 		list_splice_tail_init(&stats->vdevs,
 				      &ar->fw_stats.vdevs);

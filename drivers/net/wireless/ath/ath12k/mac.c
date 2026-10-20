@@ -20,6 +20,7 @@
 #include "debugfs.h"
 #include "hif.h"
 #include "wow.h"
+#include "vendor.h"
 #include "debugfs_sta.h"
 #include "dp.h"
 #include "dp_cmn.h"
@@ -11075,6 +11076,17 @@ int ath12k_mac_op_set_antenna(struct ieee80211_hw *hw, int radio_idx,
 }
 EXPORT_SYMBOL(ath12k_mac_op_set_antenna);
 
+/* Set the TX or RX chain mask of one radio, keeping the other one */
+int ath12k_mac_set_tx_antenna(struct ath12k *ar, u32 tx_ant)
+{
+	return __ath12k_set_antenna(ar, tx_ant, ar->cfg_rx_chainmask);
+}
+
+int ath12k_mac_set_rx_antenna(struct ath12k *ar, u32 rx_ant)
+{
+	return __ath12k_set_antenna(ar, ar->cfg_tx_chainmask, rx_ant);
+}
+
 static int ath12k_mac_ampdu_action(struct ieee80211_hw *hw,
 				   struct ieee80211_vif *vif,
 				   struct ieee80211_ampdu_params *params,
@@ -14879,6 +14891,8 @@ static int ath12k_mac_hw_register(struct ath12k_hw *ah)
 	 */
 	for_each_ar(ah, ar, i)
 		complete_all(&ar->regd_update_completed);
+
+	ath12k_vendor_register(ah);
 
 	ret = ieee80211_register_hw(hw);
 	if (ret) {

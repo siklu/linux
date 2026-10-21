@@ -128,6 +128,59 @@ static int ath12k_vendor_set_radio_params(struct ath12k *ar,
 		*reload = true;
 		ret = 0;
 		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_CTS_TIMEOUT:
+#define MAX_CTS_TIMEOUT 0xFF
+		if (value > 0 && value <= MAX_CTS_TIMEOUT) {
+			ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_CTS_TIMEOUT,
+							value, ar->pdev->pdev_id);
+			if (!ret)
+				ar->cts_timeout = value;
+			else
+				ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_CTS_TIMEOUT to firmware");
+		} else {
+			ath12k_err(ar->ab, "CTS Timeout value should be between 1 and 0xFF");
+			ret = -1;
+		}
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_ACK_TIMEOUT:
+#define MIN_TX_ACK_TIMEOUT 0x40
+#define MAX_TX_ACK_TIMEOUT 0xFF
+		{
+			u32 rx_ack_timeout = value & 0xFFFF;
+			u32 pre_rx_ack_timeout = value >> 16;
+
+			if (rx_ack_timeout < MIN_TX_ACK_TIMEOUT ||
+			    rx_ack_timeout > MAX_TX_ACK_TIMEOUT) {
+				ath12k_err(ar->ab, "TX ACK Time-out value should be between 0x40 and 0xFF");
+				ret = -1;
+				break;
+			}
+			if (pre_rx_ack_timeout < MIN_TX_ACK_TIMEOUT ||
+			    pre_rx_ack_timeout > MAX_TX_ACK_TIMEOUT)
+				pre_rx_ack_timeout = rx_ack_timeout - 20;
+			value = rx_ack_timeout | (pre_rx_ack_timeout << 16);
+			ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_ACK_TIMEOUT,
+							value, ar->pdev->pdev_id);
+			if (!ret)
+				ar->ack_timeout = value;
+			else
+				ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_ACK_TIMEOUT to firmware");
+		}
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_SLOT_TIME:
+#define MAX_SLOT_TIME 90
+		if (value > 0 && value <= MAX_SLOT_TIME) {
+			ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_SLOT_TIME,
+							value, ar->pdev->pdev_id);
+			if (!ret)
+				ar->slot_time = value;
+			else
+				ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_SLOT_TIME to firmware");
+		} else {
+			ath12k_err(ar->ab, "Slot Time value should be between 1 and 90");
+			ret = -1;
+		}
+		break;
 	default:
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
@@ -273,6 +326,18 @@ static int ath12k_vendor_get_radio_params(struct ath12k *ar,
 	switch (param) {
 	case QCA_WLAN_VENDOR_RADIO_PARAM_TEST:
 		*value = 0;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_CTS_TIMEOUT:
+		*value = ar->cts_timeout;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_SLOT_TIME:
+		*value = ar->slot_time;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_ACK_TIMEOUT:
+		*value = ar->ack_timeout;
 		ret = 0;
 		break;
 	default:

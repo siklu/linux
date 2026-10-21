@@ -669,6 +669,10 @@ struct ath12k {
 	u32 power_scale;
 	u32 chan_tx_pwr;
 	u32 rts_threshold;
+	/* timings set through the QCA vendor command, 0 if never set */
+	u32 cts_timeout;
+	u32 slot_time;
+	u32 ack_timeout;
 	u32 num_stations;
 	u32 max_num_stations;
 

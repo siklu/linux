@@ -9,6 +9,7 @@
  * (oss/src/mac80211/wlan-open 3314b0461628, vendor.h). Only the generic
  * Wi-Fi and wiphy configuration commands are carried; the numbers are kept
  * unchanged so the QSDK 13.1 cfg80211tool and command tables work as is.
+ * The parameters marked QSDK 14.0 keep their QSDK 14.0 numbers.
  */
 
 #ifndef ATH12K_VENDOR_H
@@ -109,6 +110,10 @@ enum qca_wlan_vendor_attr_iface_reload {
 enum qca_vendor_vdev_param {
 	QCA_WLAN_VENDOR_VDEV_PARAM_TEST = 0,
 	QCA_WLAN_VENDOR_VDEV_PARAM_TEST_RELOAD = QCA_WLAN_VENDOR_VDEV_PARAM_TEST,
+	/* From QSDK 14.0 (NHSS.QSDK.14.0-01668) */
+	QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS = 77,
+	/* enum wmi_channel_width */
+	QCA_WLAN_VENDOR_VDEV_PARAM_CHWIDTH = 80,
 
 	/* Add new params above */
 	QCA_WLAN_VENDOR_VDEV_PARAM_LAST,

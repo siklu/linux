@@ -13,6 +13,10 @@
  *   no PPE offload in this driver;
  * - the radio index and the parameter data length are checked;
  * - errors are logged through the wiphy, as ath12k_err() needs a device.
+ *
+ * The parameters marked QSDK 14.0 in vendor.h are ported from the
+ * NHSS.QSDK.14.0-01668 driver (oss/src/qca-extns/wlan-open-extns
+ * 42d2e21f19aa, ath/ath12k/src/vendor_extn.c).
  */
 
 #include <net/netlink.h>
@@ -87,12 +91,59 @@ static int ath12k_vendor_event_iface_reload(struct wiphy *wiphy,
 	return 0;
 }
 
+/* From QSDK 14.0 ath12k_vendor_set_fixed_rate(), EHT MCS mode: fix the TX
+ * rate of the vdev to an EHT MCS, with the maximum NSS of the radio
+ */
+static int ath12k_vendor_set_fixed_eht_mcs(struct ath12k_link_vif *arvif,
+					   u32 value)
+{
+	struct ath12k *ar = arvif->ar;
+	struct ieee80211_bss_conf *bss_conf;
+	u32 rate_code;
+	u8 nss;
+	int ret;
+
+	/* Allow pre-config before vdev is brought up. */
+	if (arvif->is_up) {
+		bss_conf = ath12k_mac_get_link_bss_conf(arvif);
+		if (bss_conf && !bss_conf->eht_support) {
+			ath12k_err(ar->ab, "EHT fixed rate is not allowed in current mode\n");
+			return -EINVAL;
+		}
+	}
+
+	if (value > ATH12K_EHT_MCS_MAX) {
+		ath12k_warn(ar->ab, "EHT MCS %u exceeds max %u, clamping\n",
+			    value, ATH12K_EHT_MCS_MAX);
+		value = ATH12K_EHT_MCS_MAX;
+	}
+
+	nss = hweight32(ar->pdev->cap.tx_chain_mask);
+	if (!nss) {
+		ath12k_err(ar->ab, "invalid tx chain capability for nss\n");
+		return -EINVAL;
+	}
+
+	rate_code = ATH12K_HW_RATE_CODE(value, nss - 1, WMI_RATE_PREAMBLE_EHT);
+	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+					    WMI_VDEV_PARAM_FIXED_RATE, rate_code);
+	if (ret) {
+		ath12k_err(ar->ab, "Failed to send WMI_VDEV_PARAM_FIXED_RATE to firmware\n");
+		return ret;
+	}
+
+	arvif->fixed_eht_mcs = value;
+
+	return 0;
+}
+
 /* Set link-vif level parameters
  * set 'reload' to true to send reload event to userspace
  */
-static int ath12k_vendor_set_arvif_params(struct ath12k *ar, u32 param,
-					  u32 value, bool *reload)
+static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
+					  u32 param, u32 value, bool *reload)
 {
+	struct ath12k *ar = arvif->ar;
 	int ret = -1;
 
 	switch (param) {
@@ -105,6 +156,22 @@ static int ath12k_vendor_set_arvif_params(struct ath12k *ar, u32 param,
 		break;
 	case ACFG_PARAM_RADIO_RXCHAINMASK:
 		ret = ath12k_mac_set_rx_antenna(ar, value);
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_CHWIDTH:
+#define WMI_HOST_CHAN_WIDTH_MAX 0xF
+		if (value > WMI_HOST_CHAN_WIDTH_MAX) {
+			ath12k_err(ar->ab, "Invalid channel width value %u\n", value);
+			return -EINVAL;
+		}
+		ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+						    WMI_VDEV_PARAM_CHWIDTH, value);
+		if (!ret)
+			arvif->chwidth = value;
+		else
+			ath12k_err(ar->ab, "Failed to send WMI_VDEV_PARAM_CHWIDTH to firmware");
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS:
+		ret = ath12k_vendor_set_fixed_eht_mcs(arvif, value);
 		break;
 	default:
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
@@ -181,6 +248,12 @@ static int ath12k_vendor_set_radio_params(struct ath12k *ar,
 			ret = -1;
 		}
 		break;
+	case PARAM_RADIO_TXCHAINSOFT:
+		ret = ath12k_mac_set_tx_antenna(ar, value);
+		break;
+	case ACFG_PARAM_RADIO_RXCHAINMASK:
+		ret = ath12k_mac_set_rx_antenna(ar, value);
+		break;
 	default:
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
@@ -201,7 +274,6 @@ static int ath12k_vendor_set_wifi_params(struct wiphy *wiphy,
 	struct ath12k_vif *ahvif;
 	struct ath12k_link_vif *arvif = NULL;
 	struct ath12k_hw *ah = NULL;
-	struct ath12k *ar;
 	u32 param = params->value;
 	bool reload = false;
 	u32 value;
@@ -232,8 +304,6 @@ static int ath12k_vendor_set_wifi_params(struct wiphy *wiphy,
 		rcu_read_unlock();
 		return -EINVAL;
 	}
-
-	ar = arvif->ar;
 	rcu_read_unlock();
 
 	ath12k_dbg(NULL, ATH12K_DBG_CFG,
@@ -241,7 +311,7 @@ static int ath12k_vendor_set_wifi_params(struct wiphy *wiphy,
 		   vif, param, value,
 		   params->ifindex, params->link_id);
 
-	ret = ath12k_vendor_set_arvif_params(ar, param, value, &reload);
+	ret = ath12k_vendor_set_arvif_params(arvif, param, value, &reload);
 
 	if (!ret && reload)
 		ath12k_vendor_event_iface_reload_link(wiphy, wdev, params->link_id);
@@ -304,8 +374,24 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 	int ret = -1;
 
 	switch (param) {
+	case PARAM_RADIO_TXCHAINSOFT:
+		*value = arvif->ar->cfg_tx_chainmask;
+		ret = 0;
+		break;
+	case ACFG_PARAM_RADIO_RXCHAINMASK:
+		*value = arvif->ar->cfg_rx_chainmask;
+		ret = 0;
+		break;
 	case QCA_WLAN_VENDOR_VDEV_PARAM_TEST:
 		*value = 0;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_CHWIDTH:
+		*value = arvif->chwidth;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS:
+		*value = arvif->fixed_eht_mcs;
 		ret = 0;
 		break;
 	default:
@@ -338,6 +424,14 @@ static int ath12k_vendor_get_radio_params(struct ath12k *ar,
 		break;
 	case QCA_WLAN_VENDOR_RADIO_PARAM_ACK_TIMEOUT:
 		*value = ar->ack_timeout;
+		ret = 0;
+		break;
+	case PARAM_RADIO_TXCHAINSOFT:
+		*value = ar->cfg_tx_chainmask;
+		ret = 0;
+		break;
+	case ACFG_PARAM_RADIO_RXCHAINMASK:
+		*value = ar->cfg_rx_chainmask;
 		ret = 0;
 		break;
 	default:

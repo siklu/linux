@@ -365,6 +365,10 @@ struct ath12k_link_vif {
 
 	bool set_wds_vdev_param;
 	bool nawds_enabled;
+
+	/* last values set through the QCA vendor commands */
+	u32 chwidth;
+	u32 fixed_eht_mcs;
 };
 
 struct ath12k_vif {

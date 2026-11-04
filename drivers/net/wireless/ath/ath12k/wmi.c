@@ -25,6 +25,7 @@
 #include "peer.h"
 #include "p2p.h"
 #include "testmode.h"
+#include "vendor.h"
 
 struct ath12k_wmi_svc_ready_parse {
 	bool wmi_svc_bitmap_done;
@@ -1557,6 +1558,8 @@ int ath12k_wmi_pdev_set_param(struct ath12k *ar, u32 param_id,
 	if (ret) {
 		ath12k_warn(ar->ab, "failed to send WMI_PDEV_SET_PARAM cmd\n");
 		dev_kfree_skb(skb);
+	} else {
+		ath12k_vendor_pdev_param_sent(ar, param_id, param_value);
 	}
 
 	return ret;
@@ -1816,6 +1819,8 @@ int ath12k_wmi_vdev_set_param_cmd(struct ath12k *ar, u32 vdev_id,
 		ath12k_warn(ar->ab,
 			    "failed to send WMI_VDEV_SET_PARAM_CMDID\n");
 		dev_kfree_skb(skb);
+	} else {
+		ath12k_vendor_vdev_param_sent(ar, vdev_id, param_id, param_value);
 	}
 
 	return ret;

@@ -134,6 +134,7 @@ static int ath12k_vendor_set_fixed_eht_mcs(struct ath12k_link_vif *arvif,
 	}
 
 	arvif->fixed_eht_mcs = value;
+	arvif->fixed_eht_mcs_set = true;
 
 	return 0;
 }
@@ -226,6 +227,9 @@ static int ath12k_vendor_get_mu_mode(struct ath12k_link_vif *arvif,
 
 	if (mp->eht && arvif->ahvif->vdev_type != WMI_VDEV_TYPE_AP)
 		return -EOPNOTSUPP;
+
+	if (!(mp->eht ? arvif->eht_mu_mode_sent : arvif->he_mu_mode_sent))
+		return -ENODATA;
 
 	if (mp->eht)
 		mu_mode = (arvif->eht_mu_mode | arvif->eht_mu_mode_on) &
@@ -353,6 +357,425 @@ static int ath12k_vendor_set_twt(struct ath12k *ar, u32 param, u32 value)
 	return ret;
 }
 
+/* A vendor parameter that is one WMI vdev or pdev parameter. As in the
+ * QSDK 14.0 setters, the value is checked and sent as is. The meaning of
+ * the values is in the firmware's wmi_unified.h.
+ *
+ * The firmware cannot be asked for these parameters, so the getters return
+ * the value last sent to it: every write of the WMI parameter is recorded,
+ * also the driver's own (RTS/CTS, protection and BA mode, NSS, EHT LTF,
+ * HE sounding mode, station kickout threshold, ARP access category). A
+ * parameter never sent has the firmware's default, which the driver does
+ * not know; its getter fails with -ENODATA.
+ */
+struct ath12k_vendor_wmi_param {
+	u32 param;
+	u32 wmi_param;
+	s64 min;
+	s64 max;
+	/* the value is signed */
+	bool sign;
+	/* format bits of the WMI value: the UL trigger parameters tell HE (0)
+	 * from EHT (WMI_HOST_VDEV_PARAM_EHT_MODE) in bits 28-31
+	 */
+	u32 fmt_mask;
+	u32 fmt;
+	/* further checks, may change the value */
+	int (*check)(struct ath12k *ar, u32 *value);
+};
+
+#define ATH12K_VENDOR_VDEV_WMI(_param, _wmi, _min, _max, ...)		\
+	{ .param = QCA_WLAN_VENDOR_VDEV_PARAM_ ## _param,		\
+	  .wmi_param = WMI_VDEV_PARAM_ ## _wmi,				\
+	  .min = (_min), .max = (_max), __VA_ARGS__ }
+
+#define ATH12K_VENDOR_PDEV_WMI(_param, _wmi, _min, _max, ...)		\
+	{ .param = QCA_WLAN_VENDOR_RADIO_PARAM_ ## _param,		\
+	  .wmi_param = WMI_PDEV_PARAM_ ## _wmi,				\
+	  .min = (_min), .max = (_max), __VA_ARGS__ }
+
+#define ATH12K_VENDOR_UL_FMT_MASK GENMASK(31, 28)
+
+/* BA mode 4 is a placeholder in the firmware, not a valid mode */
+static int ath12k_vendor_check_ba_mode(struct ath12k *ar, u32 *value)
+{
+	if (*value == 4) {
+		ath12k_err(ar->ab, "BA mode 4 is not valid\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Bits 24-31 bandwidth (0-6), bits 16-23 NSS, bits 0-15 rate mask */
+static int ath12k_vendor_check_bw_nss_rate(struct ath12k *ar, u32 *value)
+{
+	u32 bw = u32_get_bits(*value, GENMASK(31, 24));
+	u32 nss = u32_get_bits(*value, GENMASK(23, 16));
+	u32 ratemask = u32_get_bits(*value, GENMASK(15, 0));
+
+	if (bw > 6 ||
+	    (bw >= 3 && ratemask > 0x3ff) ||
+	    (bw >= 1 && bw <= 2 && ratemask > 0xff) ||
+	    (bw >= 1 && (nss == 0 || nss > 4))) {
+		ath12k_err(ar->ab, "Invalid bandwidth, NSS or rate mask: 0x%x\n",
+			   *value);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Bits 0-3 RTS/CTS flag (0-2), bits 4-7 profile (0-4). The profile is 0
+ * if and only if the flag is 0.
+ */
+static int ath12k_vendor_check_rtscts(struct ath12k *ar, u32 *value)
+{
+	u32 flag = u32_get_bits(*value, GENMASK(3, 0));
+	u32 profile = u32_get_bits(*value, GENMASK(7, 4));
+
+	if (!flag != !profile || flag > 2 || profile > 4) {
+		ath12k_err(ar->ab, "Invalid RTS/CTS value: 0x%x\n", *value);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* UL trigger GI: 0 is 0.8 us, 2 is 1.6 us, 3 is 3.2 us. 1 (0.4 us) is not
+ * an HE or EHT GI.
+ */
+static int ath12k_vendor_check_ul_gi(struct ath12k *ar, u32 *value)
+{
+	if (*value == 1) {
+		ath12k_err(ar->ab, "UL GI should be 0, 2 or 3\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* NSS 0 means the number of TX chains of the radio */
+static int ath12k_vendor_check_nss(struct ath12k *ar, u32 *value)
+{
+	u32 max_nss = hweight32(ar->pdev->cap.tx_chain_mask);
+
+	if (!*value)
+		*value = max_nss;
+
+	if (!max_nss || *value > max_nss) {
+		ath12k_err(ar->ab, "NSS should be 1 to %u\n", max_nss);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+#define ATH12K_VENDOR_ACK_TIMEOUT_MIN 0x40
+#define ATH12K_VENDOR_ACK_TIMEOUT_MAX 0xff
+
+/* RX ACK timeout in bits 0-15; pre-RX ACK timeout in bits 16-31, the RX
+ * ACK timeout - 20 if out of range
+ */
+static int ath12k_vendor_check_ack_timeout(struct ath12k *ar, u32 *value)
+{
+	u32 rx = *value & 0xffff;
+	u32 pre_rx = *value >> 16;
+
+	if (rx < ATH12K_VENDOR_ACK_TIMEOUT_MIN ||
+	    rx > ATH12K_VENDOR_ACK_TIMEOUT_MAX) {
+		ath12k_err(ar->ab, "TX ACK timeout should be 0x40 to 0xff\n");
+		return -EINVAL;
+	}
+
+	if (pre_rx < ATH12K_VENDOR_ACK_TIMEOUT_MIN ||
+	    pre_rx > ATH12K_VENDOR_ACK_TIMEOUT_MAX)
+		pre_rx = rx - 20;
+
+	*value = rx | (pre_rx << 16);
+
+	return 0;
+}
+
+static const struct ath12k_vendor_wmi_param ath12k_vendor_vdev_wmi_params[] = {
+	ATH12K_VENDOR_VDEV_WMI(DYN_BW_RTS, DISABLE_DYN_BW_RTS, 0, U32_MAX),
+	/* bits 0-2: rate drop down of management, SU data and MU data */
+	ATH12K_VENDOR_VDEV_WMI(RATE_DROPDOWN, RATE_DROPDOWN_BMAP, 0, 7),
+	ATH12K_VENDOR_VDEV_WMI(RC_NUM_RETRIES, RC_NUM_RETRIES, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(HE_SOUNDING_MODE, SET_HE_SOUNDING_MODE,
+			       0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(GTX_ENABLE, GTX_ENABLE, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(HWCTS2SELF_OFDMA, HWCTS2SELF_OFDMA, 0, 1),
+	/* a BA mode: 0 default, 1 manual, 2, 3, 5, 6 BA window 64, 256,
+	 * 512, 1024
+	 */
+	ATH12K_VENDOR_VDEV_WMI(BA_BUFSIZE, BA_MODE, 0, 6,
+			       .check = ath12k_vendor_check_ba_mode),
+	ATH12K_VENDOR_VDEV_WMI(PROTECTION_MODE, PROTECTION_MODE, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(BW_NSS_RATE, BW_NSS_RATEMASK, 0, U32_MAX,
+			       .check = ath12k_vendor_check_bw_nss_rate),
+	/* UL trigger: LDPC, LTF, max NSS, PPDU bandwidth, GI, STBC */
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_LDPC, UL_LDPC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_LTF, UL_EHT_LTF, 0, 3),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_NSS, UL_NSS, 0, 0xfffffff,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_PPDU_BW, UL_PPDU_BW, 0, 4,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_SHORTGI, UL_GI, 0, 3,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE,
+			       .check = ath12k_vendor_check_ul_gi),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_STBC, UL_STBC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(ENABLERTSCTS, ENABLE_RTSCTS, 0, 0xff,
+			       .check = ath12k_vendor_check_rtscts),
+	ATH12K_VENDOR_VDEV_WMI(HE_DCM, HE_DCM, 0, 1),
+	ATH12K_VENDOR_VDEV_WMI(HE_EXTRANGE, HE_RANGE_EXT, 0, 1),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_LDPC, UL_LDPC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_NSS, UL_NSS, 0, 0xfffffff,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_PPDU_BW, UL_PPDU_BW, 0, 3,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_SHORTGI, UL_GI, 0, 3,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .check = ath12k_vendor_check_ul_gi),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_STBC, UL_STBC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	/* rate code of RTS and CTS */
+	ATH12K_VENDOR_VDEV_WMI(RTSCTS_RATE, RTSCTS_RATE, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(DIS_LPI_ANT_OPTIMIZE,
+			       DISABLE_LPI_ANT_OPTIMIZATION, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(NSS, NSS, 0, U32_MAX,
+			       .check = ath12k_vendor_check_nss),
+	/* enum wmi_channel_width */
+	ATH12K_VENDOR_VDEV_WMI(CHWIDTH, CHWIDTH, 0, 0xf),
+	ATH12K_VENDOR_VDEV_WMI(EHT_LTF, EHT_LTF, 0, 3),
+};
+
+static const struct ath12k_vendor_wmi_param ath12k_vendor_pdev_wmi_params[] = {
+	ATH12K_VENDOR_PDEV_WMI(MGMT_RETRY_LIMIT, MGMT_RETRY_LIMIT, 1, 14),
+	ATH12K_VENDOR_PDEV_WMI(RTS_CTS_RATE, RTS_FIXED_RATE, 0, 4),
+	/* retry and station kickout thresholds, 0 disables */
+	ATH12K_VENDOR_PDEV_WMI(NON_AGG_SW_RETRY_TH, NON_AGG_SW_RETRY_TH,
+			       0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(AGG_SW_RETRY_TH, AGG_SW_RETRY_TH, 0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(STA_KICKOUT_TH, STA_KICKOUT_TH, 0, U32_MAX),
+	/* access category of ARP and DHCP: 0 BE, 1 BK, 2 VI, 3 VO */
+	ATH12K_VENDOR_PDEV_WMI(ARPDHCP_AC_OVERRIDE, ARP_AC_OVERRIDE, 0, 3),
+	ATH12K_VENDOR_PDEV_WMI(ANI_ENABLE, ANI_ENABLE, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(ANI_POLL_PERIOD, ANI_POLL_PERIOD, 1, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(ANI_LISTEN_PERIOD, ANI_LISTEN_PERIOD,
+			       1, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(ANI_OFDM_LEVEL, ANI_OFDM_LEVEL, -128, 127,
+			       .sign = true),
+	/* dBm. QSDK clamps the value to this range. */
+	ATH12K_VENDOR_PDEV_WMI(CCA_THRESHOLD, CCA_THRESHOLD, -94, -11,
+			       .sign = true),
+	/* dBm */
+	ATH12K_VENDOR_PDEV_WMI(SENS_LEVEL, SENSITIVITY_LEVEL, 0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(DYN_GROUPING, MU_GROUP_POLICY, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(BURST_DUR, BURST_DUR, 0, 8192),
+	ATH12K_VENDOR_PDEV_WMI(BURST_ENABLE, BURST_ENABLE, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(DISABLE_LPI_ANT, DISABLE_LPI_ANT_OPTIMIZATION,
+			       0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(UL_OFDMA_RTD, UL_OFDMA_RTD, 0, 600),
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_SMALL_MRU, ENABLE_SMALL_MRU, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_LARGE_MRU, ENABLE_LARGE_MRU, 0, 1),
+	/* us */
+	ATH12K_VENDOR_PDEV_WMI(SET_PPDU_DURATION_CMDID, SET_PPDU_DURATION_CMDID,
+			       0, U32_MAX),
+	/* ms */
+	ATH12K_VENDOR_PDEV_WMI(TXBF_SOUND_PERIOD_CMDID, TXBF_SOUND_PERIOD_CMDID,
+			       10, 10000),
+	/* 0 data-CTS, 1 data-data, 2 data-data or CTS */
+	ATH12K_VENDOR_PDEV_WMI(SET_BURST_MODE_CMDID, SET_BURST_MODE_CMDID,
+			       0, 2),
+	/* bitmaps of the TIDs */
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_AMSDU, ENABLE_PER_TID_AMSDU, 0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_AMPDU, ENABLE_PER_TID_AMPDU, 0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(CTS_TIMEOUT, CTS_TIMEOUT, 1, 0xff),
+	ATH12K_VENDOR_PDEV_WMI(SLOT_TIME, SLOT_TIME, 1, 90),
+	ATH12K_VENDOR_PDEV_WMI(ACK_TIMEOUT, ACK_TIMEOUT, 0, U32_MAX,
+			       .check = ath12k_vendor_check_ack_timeout),
+	/* 1: equal RU allocation for DL and UL OFDMA, 0: dynamic */
+	ATH12K_VENDOR_PDEV_WMI(EQUAL_RU_ALLOCATION_ENABLE,
+			       EQUAL_RU_ALLOCATION_ENABLE, 0, 1),
+	/* DL, us */
+	ATH12K_VENDOR_PDEV_WMI(SET_MU_PPDU_DURATION, SET_MU_PPDU_DURATION,
+			       0, U32_MAX),
+	/* bitmap of the punctured 20 MHz subchannels */
+	ATH12K_VENDOR_PDEV_WMI(SET_PREAM_PUNCT_BW, SET_PREAM_PUNCT_BW,
+			       0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(LOW_LATENCY_SCHED_MODE, LOW_LATENCY_SCHED_MODE,
+			       0, U32_MAX),
+	/* ms */
+	ATH12K_VENDOR_PDEV_WMI(MSDU_TTL, SET_MSDU_TTL_CMDID, 0, U32_MAX),
+};
+
+static_assert(ARRAY_SIZE(ath12k_vendor_vdev_wmi_params) <=
+	      ATH12K_VENDOR_WMI_PARAMS_MAX);
+static_assert(ARRAY_SIZE(ath12k_vendor_pdev_wmi_params) <=
+	      ATH12K_VENDOR_WMI_PARAMS_MAX);
+
+static int ath12k_vendor_find_wmi_param(const struct ath12k_vendor_wmi_param *wps,
+					int n, u32 param)
+{
+	int i;
+
+	for (i = 0; i < n; i++)
+		if (wps[i].param == param)
+			return i;
+
+	return -ENOENT;
+}
+
+/* Record a WMI parameter sent to the firmware, by anyone */
+static void ath12k_vendor_wmi_param_sent(const struct ath12k_vendor_wmi_param *wps,
+					 int n, struct ath12k_vendor_wmi_vals *vals,
+					 u32 wmi_param, u32 value)
+{
+	int i;
+
+	for (i = 0; i < n; i++) {
+		if (wps[i].wmi_param != wmi_param ||
+		    (value & wps[i].fmt_mask) != wps[i].fmt)
+			continue;
+
+		WRITE_ONCE(vals->val[i], value & ~wps[i].fmt_mask);
+		/* the value before the bit, for ath12k_vendor_get_wmi_val() */
+		smp_mb__before_atomic();
+		set_bit(i, vals->sent);
+	}
+}
+
+void ath12k_vendor_vdev_param_sent(struct ath12k *ar, u32 vdev_id,
+				   u32 wmi_param, u32 value)
+{
+	if (vdev_id >= ATH12K_VENDOR_MAX_VDEVS)
+		return;
+
+	ath12k_vendor_wmi_param_sent(ath12k_vendor_vdev_wmi_params,
+				     ARRAY_SIZE(ath12k_vendor_vdev_wmi_params),
+				     &ar->vendor_vdev_wmi[vdev_id],
+				     wmi_param, value);
+}
+
+void ath12k_vendor_pdev_param_sent(struct ath12k *ar, u32 wmi_param,
+				   u32 value)
+{
+	ath12k_vendor_wmi_param_sent(ath12k_vendor_pdev_wmi_params,
+				     ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+				     &ar->vendor_pdev_wmi, wmi_param, value);
+}
+
+static int ath12k_vendor_get_wmi_val(struct ath12k_vendor_wmi_vals *vals,
+				     int idx, u32 *value)
+{
+	if (!test_bit(idx, vals->sent))
+		return -ENODATA;
+
+	/* the bit before the value, see ath12k_vendor_wmi_param_sent() */
+	smp_rmb();
+	*value = READ_ONCE(vals->val[idx]);
+
+	return 0;
+}
+
+static int ath12k_vendor_check_wmi_param(struct ath12k *ar,
+					 const struct ath12k_vendor_wmi_param *wp,
+					 u32 *value)
+{
+	s64 v = wp->sign ? (s64)(s32)*value : (s64)*value;
+
+	if (v < wp->min || v > wp->max) {
+		ath12k_err(ar->ab, "Value %lld should be %lld to %lld\n",
+			   v, wp->min, wp->max);
+		return -EINVAL;
+	}
+
+	return wp->check ? wp->check(ar, value) : 0;
+}
+
+static int ath12k_vendor_set_vdev_wmi_param(struct ath12k_link_vif *arvif,
+					    int idx, u32 value)
+{
+	const struct ath12k_vendor_wmi_param *wp =
+		&ath12k_vendor_vdev_wmi_params[idx];
+	struct ath12k *ar = arvif->ar;
+	int ret;
+
+	if (!arvif->is_created) {
+		ath12k_err(ar->ab, "The interface has no firmware vdev yet\n");
+		return -ENOTCONN;
+	}
+
+	ret = ath12k_vendor_check_wmi_param(ar, wp, &value);
+	if (ret)
+		return ret;
+
+	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, wp->wmi_param,
+					    value | wp->fmt);
+	if (ret)
+		ath12k_err(ar->ab, "Failed to send vdev param %u to firmware\n",
+			   wp->wmi_param);
+
+	return ret;
+}
+
+static int ath12k_vendor_get_vdev_wmi_param(struct ath12k_link_vif *arvif,
+					    int idx, u32 *value)
+{
+	if (!arvif->is_created || !arvif->ar ||
+	    arvif->vdev_id >= ATH12K_VENDOR_MAX_VDEVS)
+		return -ENODATA;
+
+	return ath12k_vendor_get_wmi_val(&arvif->ar->vendor_vdev_wmi[arvif->vdev_id],
+					 idx, value);
+}
+
+#define ATH12K_VENDOR_DEFAULT_BURST_DUR 8160
+
+static int ath12k_vendor_set_pdev_wmi_param(struct ath12k *ar, int idx,
+					    u32 value)
+{
+	const struct ath12k_vendor_wmi_param *wp =
+		&ath12k_vendor_pdev_wmi_params[idx];
+	int dur_idx;
+	u32 dur;
+	int ret;
+
+	ret = ath12k_vendor_check_wmi_param(ar, wp, &value);
+	if (ret)
+		return ret;
+
+	ret = ath12k_wmi_pdev_set_param(ar, wp->wmi_param, value,
+					ar->pdev->pdev_id);
+	if (ret) {
+		ath12k_err(ar->ab, "Failed to send pdev param %u to firmware\n",
+			   wp->wmi_param);
+		return ret;
+	}
+
+	/* As QSDK: bursting gets a duration if none was set */
+	if (wp->param == QCA_WLAN_VENDOR_RADIO_PARAM_BURST_ENABLE) {
+		dur_idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
+						       ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+						       QCA_WLAN_VENDOR_RADIO_PARAM_BURST_DUR);
+		if (ath12k_vendor_get_wmi_val(&ar->vendor_pdev_wmi, dur_idx, &dur) ||
+		    !dur)
+			ret = ath12k_vendor_set_pdev_wmi_param(ar, dur_idx,
+							       ATH12K_VENDOR_DEFAULT_BURST_DUR);
+	}
+
+	return ret;
+}
+
 /* Set link-vif level parameters
  * set 'reload' to true to send reload event to userspace
  */
@@ -361,6 +784,7 @@ static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
 {
 	struct ath12k *ar = arvif->ar;
 	int ret = -1;
+	int idx;
 
 	switch (param) {
 	case QCA_WLAN_VENDOR_VDEV_PARAM_TEST_RELOAD:
@@ -372,19 +796,6 @@ static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
 		break;
 	case ACFG_PARAM_RADIO_RXCHAINMASK:
 		ret = ath12k_mac_set_rx_antenna(ar, value);
-		break;
-	case QCA_WLAN_VENDOR_VDEV_PARAM_CHWIDTH:
-#define WMI_HOST_CHAN_WIDTH_MAX 0xF
-		if (value > WMI_HOST_CHAN_WIDTH_MAX) {
-			ath12k_err(ar->ab, "Invalid channel width value %u\n", value);
-			return -EINVAL;
-		}
-		ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
-						    WMI_VDEV_PARAM_CHWIDTH, value);
-		if (!ret)
-			arvif->chwidth = value;
-		else
-			ath12k_err(ar->ab, "Failed to send WMI_VDEV_PARAM_CHWIDTH to firmware");
 		break;
 	case QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS:
 		ret = ath12k_vendor_set_fixed_eht_mcs(arvif, value);
@@ -406,6 +817,13 @@ static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
 		ret = ath12k_vendor_set_be_wmm(arvif, param, value);
 		break;
 	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_vdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_vdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_set_vdev_wmi_param(arvif, idx, value);
+			break;
+		}
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
 		break;
@@ -421,77 +839,12 @@ static int ath12k_vendor_set_radio_params(struct ath12k *ar,
 					  u32 param, u32 value, bool *reload)
 {
 	int ret = -1;
+	int idx;
 
 	switch (param) {
 	case QCA_WLAN_VENDOR_RADIO_PARAM_TEST_RELOAD:
 		*reload = true;
 		ret = 0;
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_CTS_TIMEOUT:
-#define MAX_CTS_TIMEOUT 0xFF
-		if (value > 0 && value <= MAX_CTS_TIMEOUT) {
-			ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_CTS_TIMEOUT,
-							value, ar->pdev->pdev_id);
-			if (!ret)
-				ar->cts_timeout = value;
-			else
-				ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_CTS_TIMEOUT to firmware");
-		} else {
-			ath12k_err(ar->ab, "CTS Timeout value should be between 1 and 0xFF");
-			ret = -1;
-		}
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_ACK_TIMEOUT:
-#define MIN_TX_ACK_TIMEOUT 0x40
-#define MAX_TX_ACK_TIMEOUT 0xFF
-		{
-			u32 rx_ack_timeout = value & 0xFFFF;
-			u32 pre_rx_ack_timeout = value >> 16;
-
-			if (rx_ack_timeout < MIN_TX_ACK_TIMEOUT ||
-			    rx_ack_timeout > MAX_TX_ACK_TIMEOUT) {
-				ath12k_err(ar->ab, "TX ACK Time-out value should be between 0x40 and 0xFF");
-				ret = -1;
-				break;
-			}
-			if (pre_rx_ack_timeout < MIN_TX_ACK_TIMEOUT ||
-			    pre_rx_ack_timeout > MAX_TX_ACK_TIMEOUT)
-				pre_rx_ack_timeout = rx_ack_timeout - 20;
-			value = rx_ack_timeout | (pre_rx_ack_timeout << 16);
-			ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_ACK_TIMEOUT,
-							value, ar->pdev->pdev_id);
-			if (!ret)
-				ar->ack_timeout = value;
-			else
-				ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_ACK_TIMEOUT to firmware");
-		}
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_SLOT_TIME:
-#define MAX_SLOT_TIME 90
-		if (value > 0 && value <= MAX_SLOT_TIME) {
-			ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_SLOT_TIME,
-							value, ar->pdev->pdev_id);
-			if (!ret)
-				ar->slot_time = value;
-			else
-				ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_SLOT_TIME to firmware");
-		} else {
-			ath12k_err(ar->ab, "Slot Time value should be between 1 and 90");
-			ret = -1;
-		}
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_EQUAL_RU_ALLOCATION_ENABLE:
-		if (value > 1) {
-			ath12k_err(ar->ab, "RU allocation enable value should be 0 or 1");
-			ret = -1;
-			break;
-		}
-		ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_EQUAL_RU_ALLOCATION_ENABLE,
-						value, ar->pdev->pdev_id);
-		if (!ret)
-			ar->equal_ru_alloc = value;
-		else
-			ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_EQUAL_RU_ALLOCATION_ENABLE to firmware");
 		break;
 	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST:
 	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_RTWT:
@@ -504,6 +857,13 @@ static int ath12k_vendor_set_radio_params(struct ath12k *ar,
 		ret = ath12k_mac_set_rx_antenna(ar, value);
 		break;
 	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_set_pdev_wmi_param(ar, idx, value);
+			break;
+		}
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
 		break;
@@ -621,6 +981,7 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 					  u32 param, u32 *value)
 {
 	int ret = -1;
+	int idx;
 
 	switch (param) {
 	case PARAM_RADIO_TXCHAINSOFT:
@@ -635,11 +996,11 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 		*value = 0;
 		ret = 0;
 		break;
-	case QCA_WLAN_VENDOR_VDEV_PARAM_CHWIDTH:
-		*value = arvif->chwidth;
-		ret = 0;
-		break;
 	case QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS:
+		if (!arvif->fixed_eht_mcs_set) {
+			ret = -ENODATA;
+			break;
+		}
 		*value = arvif->fixed_eht_mcs;
 		ret = 0;
 		break;
@@ -660,6 +1021,13 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 		ret = ath12k_vendor_get_be_wmm(arvif, param, value);
 		break;
 	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_vdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_vdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_get_vdev_wmi_param(arvif, idx, value);
+			break;
+		}
 		ath12k_dbg(NULL, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
 		break;
@@ -673,26 +1041,11 @@ static int ath12k_vendor_get_radio_params(struct ath12k *ar,
 					  u32 param, u32 *value)
 {
 	int ret = -1;
+	int idx;
 
 	switch (param) {
 	case QCA_WLAN_VENDOR_RADIO_PARAM_TEST:
 		*value = 0;
-		ret = 0;
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_CTS_TIMEOUT:
-		*value = ar->cts_timeout;
-		ret = 0;
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_SLOT_TIME:
-		*value = ar->slot_time;
-		ret = 0;
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_ACK_TIMEOUT:
-		*value = ar->ack_timeout;
-		ret = 0;
-		break;
-	case QCA_WLAN_VENDOR_RADIO_PARAM_EQUAL_RU_ALLOCATION_ENABLE:
-		*value = ar->equal_ru_alloc;
 		ret = 0;
 		break;
 	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST:
@@ -712,6 +1065,14 @@ static int ath12k_vendor_get_radio_params(struct ath12k *ar,
 		ret = 0;
 		break;
 	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_get_wmi_val(&ar->vendor_pdev_wmi, idx,
+							value);
+			break;
+		}
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
 		break;
@@ -1086,6 +1447,9 @@ static int ath12k_vendor_get_wifi_config_handler(struct wiphy *wiphy,
 		case QCA_NL80211_VENDOR_SUBCMD_WIFI_PARAMS:
 			ret = ath12k_vendor_get_wifi_params(wiphy, wdev,
 							    &wifi_params, &value);
+			/* never sent to the firmware: no value */
+			if (ret == -ENODATA)
+				return ret;
 			if (ret) {
 				wiphy_err(wiphy,
 					  "Failed to get wifi params\n");
@@ -1162,6 +1526,9 @@ static int ath12k_vendor_get_wiphy_config_handler(struct wiphy *wiphy,
 		case QCA_NL80211_VENDOR_SUBCMD_WIFI_PARAMS:
 			ret = ath12k_vendor_get_wiphy_params(wiphy,
 							     &wifi_params, &value);
+			/* never sent to the firmware: no value */
+			if (ret == -ENODATA)
+				return ret;
 			if (ret) {
 				wiphy_err(wiphy,
 					  "Failed to get wiphy params\n");

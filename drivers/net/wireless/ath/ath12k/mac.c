@@ -10456,6 +10456,9 @@ int ath12k_mac_vdev_create(struct ath12k *ar, struct ath12k_link_vif *arvif)
 		goto err;
 	}
 
+	/* the vdev id may have been used before: forget its WMI values */
+	memset(&ar->vendor_vdev_wmi[vdev_id], 0, sizeof(ar->vendor_vdev_wmi[0]));
+
 	ret = ath12k_wmi_vdev_create(ar, arvif->bssid, &vdev_arg);
 	if (ret) {
 		ath12k_warn(ab, "failed to create WMI vdev %d: %d\n",

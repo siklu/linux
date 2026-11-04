@@ -316,6 +316,22 @@ struct ath12k_rekey_data {
 	bool enable_offload;
 };
 
+/* Values last sent to the firmware, by the driver or through the QCA vendor
+ * commands, of the WMI parameters in ath12k_vendor_vdev_wmi_params[] or
+ * ath12k_vendor_pdev_wmi_params[] of vendor.c, at the same index. The
+ * firmware cannot be asked for them.
+ */
+#define ATH12K_VENDOR_WMI_PARAMS_MAX 32
+
+struct ath12k_vendor_wmi_vals {
+	/* bit n: val[n] was sent */
+	DECLARE_BITMAP(sent, ATH12K_VENDOR_WMI_PARAMS_MAX);
+	u32 val[ATH12K_VENDOR_WMI_PARAMS_MAX];
+};
+
+/* vdev ids index the u64 vdev maps */
+#define ATH12K_VENDOR_MAX_VDEVS 64
+
 struct ath12k_link_vif {
 	u32 vdev_id;
 	u32 beacon_interval;
@@ -366,9 +382,9 @@ struct ath12k_link_vif {
 	bool set_wds_vdev_param;
 	bool nawds_enabled;
 
-	/* last values set through the QCA vendor commands */
-	u32 chwidth;
+	/* fixed EHT MCS last set through the QCA vendor commands */
 	u32 fixed_eht_mcs;
+	bool fixed_eht_mcs_set;
 
 	/* HE and EHT MU mode bits (WMI_VDEV_PARAM_SET_HEMU_MODE and
 	 * WMI_VDEV_PARAM_SET_EHT_MU_MODE) forced on or off through the QCA
@@ -692,12 +708,7 @@ struct ath12k {
 	u32 power_scale;
 	u32 chan_tx_pwr;
 	u32 rts_threshold;
-	/* timings set through the QCA vendor command, 0 if never set */
-	u32 cts_timeout;
-	u32 slot_time;
-	u32 ack_timeout;
 	/* set through the QCA vendor commands */
-	u32 equal_ru_alloc;
 	bool twt_bcast;
 	bool twt_rtwt;
 	/* TWT enabled in the firmware (WMI_TWT_ENABLE_CMDID sent), and
@@ -705,6 +716,9 @@ struct ath12k {
 	 */
 	bool twt_enabled;
 	bool twt_responder;
+	/* see struct ath12k_vendor_wmi_vals */
+	struct ath12k_vendor_wmi_vals vendor_pdev_wmi;
+	struct ath12k_vendor_wmi_vals vendor_vdev_wmi[ATH12K_VENDOR_MAX_VDEVS];
 	u32 num_stations;
 	u32 max_num_stations;
 

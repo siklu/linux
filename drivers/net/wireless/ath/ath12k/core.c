@@ -1465,6 +1465,8 @@ void ath12k_core_halt(struct ath12k *ar)
 
 	ar->num_created_vdevs = 0;
 	ar->allocated_vdev_map = 0;
+	/* the firmware restarts with its defaults */
+	memset(&ar->vendor_pdev_wmi, 0, sizeof(ar->vendor_pdev_wmi));
 
 	ath12k_mac_scan_finish(ar);
 	ath12k_mac_peer_cleanup_all(ar);

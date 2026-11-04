@@ -565,9 +565,9 @@ struct ath12k_htt_rx_pdev_rate_stats_tlv {
 	__le32 rx_ulofdma_mpdu_fail[ATH12K_HTT_RX_PDEV_MAX_OFDMA_NUM_USER];
 	__le32 nss_count;
 	__le32 pilot_count;
-	__le32 rx_pil_evm_db[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS]
-			   [ATH12K_HTT_RX_PDEV_STATS_RXEVM_MAX_PILOTS_NSS];
-	__le32 rx_pilot_evm_db_mean[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS];
+	a_sle32 rx_pil_evm_db[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS]
+			    [ATH12K_HTT_RX_PDEV_STATS_RXEVM_MAX_PILOTS_NSS];
+	a_sle32 rx_pilot_evm_db_mean[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS];
 	s8 rx_ul_fd_rssi[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS]
 			[ATH12K_HTT_RX_PDEV_MAX_OFDMA_NUM_USER];
 	__le32 per_chain_rssi_pkt_type;
@@ -594,7 +594,14 @@ struct ath12k_htt_rx_pdev_rate_stats_tlv {
 #define ATH12K_HTT_RX_PDEV_STATS_NUM_EXTRA2_MCS_COUNTERS	2
 #define ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT2_COUNTERS		5
 #define ATH12K_HTT_RX_PDEV_STATS_NUM_PUNCTURED_MODE_COUNTERS	5
+#define ATH12K_HTT_RX_PDEV_STATS_NUM_REDUCED_CHAN_TYPES		2
+#define ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_2_COUNTERS		8
 
+/* Per-chain RSSI is reported per 20 MHz subband of a 320 MHz channel:
+ * subbands 0-3 in rssi_chain_in_db / rx_per_chain_rssi_in_dbm of the rate
+ * TLV, 4-7 in rssi_chain_ext / rx_per_chain_rssi_ext_in_dbm and 8-15 in
+ * rssi_chain_ext_2 / rx_per_chain_rssi_ext_2_in_dbm of this TLV.
+ */
 struct ath12k_htt_rx_pdev_rate_ext_stats_tlv {
 	u8 rssi_chain_ext[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS]
 			 [ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_COUNTERS];
@@ -617,6 +624,12 @@ struct ath12k_htt_rx_pdev_rate_ext_stats_tlv {
 	__le32 rx_gi_ext_2[ATH12K_HTT_RX_PDEV_STATS_NUM_GI_COUNTERS]
 		[ATH12K_HTT_RX_PDEV_STATS_NUM_EXTRA2_MCS_COUNTERS];
 	__le32 rx_su_punctured_mode[ATH12K_HTT_RX_PDEV_STATS_NUM_PUNCTURED_MODE_COUNTERS];
+	__le32 reduced_rx_bw[ATH12K_HTT_RX_PDEV_STATS_NUM_REDUCED_CHAN_TYPES]
+			    [ATH12K_HTT_RX_PDEV_STATS_NUM_BW_COUNTERS];
+	u8 rssi_chain_ext_2[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS]
+			   [ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_2_COUNTERS];
+	s8 rx_per_chain_rssi_ext_2_in_dbm[ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS]
+					 [ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_2_COUNTERS];
 } __packed;
 
 #define ATH12K_HTT_TX_PDEV_STATS_SCHED_PER_TXQ_MAC_ID	GENMASK(7, 0)

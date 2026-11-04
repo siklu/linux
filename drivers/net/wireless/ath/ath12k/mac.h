@@ -270,6 +270,10 @@ int ath12k_mac_op_set_antenna(struct ieee80211_hw *hw, int radio_idx,
 			      u32 tx_ant, u32 rx_ant);
 int ath12k_mac_op_get_antenna(struct ieee80211_hw *hw, int radio_idx,
 			      u32 *tx_ant, u32 *rx_ant);
+int ath12k_mac_set_tx_antenna(struct ath12k *ar, u32 tx_ant);
+int ath12k_mac_set_rx_antenna(struct ath12k *ar, u32 rx_ant);
+int ath12k_mac_twt_enable(struct ath12k *ar, bool responder);
+int ath12k_mac_twt_reconfig(struct ath12k *ar);
 int ath12k_mac_op_ampdu_action(struct ieee80211_hw *hw,
 			       struct ieee80211_vif *vif,
 			       struct ieee80211_ampdu_params *params);

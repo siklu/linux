@@ -369,6 +369,19 @@ struct ath12k_link_vif {
 	/* last values set through the QCA vendor commands */
 	u32 chwidth;
 	u32 fixed_eht_mcs;
+
+	/* HE and EHT MU mode bits (WMI_VDEV_PARAM_SET_HEMU_MODE and
+	 * WMI_VDEV_PARAM_SET_EHT_MU_MODE) forced on or off through the QCA
+	 * vendor commands, and the MU mode values last sent to the firmware
+	 */
+	u32 he_mu_mode_on;
+	u32 he_mu_mode_off;
+	u32 eht_mu_mode_on;
+	u32 eht_mu_mode_off;
+	u32 he_mu_mode;
+	u32 eht_mu_mode;
+	bool he_mu_mode_sent;
+	bool eht_mu_mode_sent;
 };
 
 struct ath12k_vif {
@@ -531,6 +544,12 @@ struct ath12k_link_sta {
 	 /* for firmware use only */
 	u8 link_idx;
 
+	/* per peer OFDMA (WMI_PEER_PARAM_OFDMA_ENABLE), if set through the
+	 * QCA vendor command
+	 */
+	bool ofdma_enable_set;
+	bool ofdma_enable;
+
 	/* peer addr based rhashtable list pointer */
 	struct rhash_head rhash_addr;
 };
@@ -677,6 +696,15 @@ struct ath12k {
 	u32 cts_timeout;
 	u32 slot_time;
 	u32 ack_timeout;
+	/* set through the QCA vendor commands */
+	u32 equal_ru_alloc;
+	bool twt_bcast;
+	bool twt_rtwt;
+	/* TWT enabled in the firmware (WMI_TWT_ENABLE_CMDID sent), and
+	 * whether for a responder (AP) or a requester (station) BSS
+	 */
+	bool twt_enabled;
+	bool twt_responder;
 	u32 num_stations;
 	u32 max_num_stations;
 

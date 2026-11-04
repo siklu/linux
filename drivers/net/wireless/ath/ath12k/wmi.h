@@ -1083,6 +1083,7 @@ enum wmi_tlv_pdev_param {
 	WMI_PDEV_PARAM_RADIO_DIAGNOSIS_ENABLE,
 	WMI_PDEV_PARAM_MESH_MCAST_ENABLE,
 	WMI_PDEV_PARAM_ACK_TIMEOUT = 0x95,
+	WMI_PDEV_PARAM_EQUAL_RU_ALLOCATION_ENABLE = 0xa3,
 	WMI_PDEV_PARAM_SET_CMD_OBSS_PD_THRESHOLD = 0xbc,
 	WMI_PDEV_PARAM_SET_CMD_OBSS_PD_PER_AC = 0xbe,
 	WMI_PDEV_PARAM_ENABLE_SR_PROHIBIT = 0xc6,
@@ -2319,6 +2320,8 @@ enum wmi_peer_param {
 	WMI_PEER_SET_MAX_TX_RATE = 17,
 	WMI_PEER_SET_MIN_TX_RATE = 18,
 	WMI_PEER_SET_DEFAULT_ROUTING = 19,
+	/* per peer 11ax OFDMA enable or disable */
+	WMI_PEER_PARAM_OFDMA_ENABLE = 25,
 	WMI_PEER_CHWIDTH_PUNCTURE_20MHZ_BITMAP = 39,
 };
 
@@ -4955,11 +4958,26 @@ struct wmi_twt_enable_params_cmd {
 	__le32 mode_check_interval;
 	__le32 add_sta_slot_interval;
 	__le32 remove_sta_slot_interval;
+	__le32 flags;
 } __packed;
+
+/* Flags of the TWT enable and disable commands. Without SPLIT_CONFIG the
+ * command covers both the requester and the responder; with it, one command
+ * covers the role in RESPONDER (0: requester, 1: responder), and I_B_TWT
+ * adds broadcast TWT to individual TWT. B_R_TWT selects restricted
+ * broadcast TWT (R-TWT).
+ */
+#define WMI_TWT_EN_DIS_FLAG_BTWT		BIT(0)
+#define WMI_TWT_EN_DIS_FLAG_SPLIT_CONFIG	BIT(3)
+#define WMI_TWT_EN_DIS_FLAG_RESPONDER		BIT(4)
+#define WMI_TWT_EN_DIS_FLAG_I_B_TWT		BIT(5)
+#define WMI_TWT_EN_DIS_FLAG_B_R_TWT		BIT(6)
 
 struct wmi_twt_disable_params_cmd {
 	__le32 tlv_header;
 	__le32 pdev_id;
+	__le32 flags;
+	__le32 reason_code;
 } __packed;
 
 struct wmi_obss_spatial_reuse_params_cmd {
@@ -6492,8 +6510,8 @@ ath12k_wmi_rx_reord_queue_remove(struct ath12k *ar,
 int ath12k_wmi_send_pdev_set_regdomain(struct ath12k *ar,
 				       struct ath12k_wmi_pdev_set_regdomain_arg *arg);
 int ath12k_wmi_simulate_radar(struct ath12k *ar);
-int ath12k_wmi_send_twt_enable_cmd(struct ath12k *ar, u32 pdev_id);
-int ath12k_wmi_send_twt_disable_cmd(struct ath12k *ar, u32 pdev_id);
+int ath12k_wmi_send_twt_enable_cmd(struct ath12k *ar, u32 pdev_id, u32 flags);
+int ath12k_wmi_send_twt_disable_cmd(struct ath12k *ar, u32 pdev_id, u32 flags);
 int ath12k_wmi_send_obss_spr_cmd(struct ath12k *ar, u32 vdev_id,
 				 struct ieee80211_he_obss_pd *he_obss_pd);
 u32 ath12k_wmi_build_obss_pd(const struct ath12k_wmi_obss_pd_arg *arg);

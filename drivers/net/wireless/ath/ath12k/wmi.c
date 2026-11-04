@@ -3452,7 +3452,7 @@ int ath12k_wmi_send_11d_scan_stop_cmd(struct ath12k *ar, u32 vdev_id)
 }
 
 int
-ath12k_wmi_send_twt_enable_cmd(struct ath12k *ar, u32 pdev_id)
+ath12k_wmi_send_twt_enable_cmd(struct ath12k *ar, u32 pdev_id, u32 flags)
 {
 	struct ath12k_wmi_pdev *wmi = ar->wmi;
 	struct ath12k_base *ab = wmi->wmi_ab->ab;
@@ -3494,6 +3494,10 @@ ath12k_wmi_send_twt_enable_cmd(struct ath12k *ar, u32 pdev_id)
 		cpu_to_le32(ATH12K_TWT_DEF_REMOVE_STA_SLOT_INTERVAL);
 	/* TODO add MBSSID support */
 	cmd->mbss_support = 0;
+	cmd->flags = cpu_to_le32(flags);
+
+	ath12k_dbg(ab, ATH12K_DBG_WMI, "WMI twt enable pdev id %u flags 0x%x\n",
+		   pdev_id, flags);
 
 	ret = ath12k_wmi_cmd_send(wmi, skb,
 				  WMI_TWT_ENABLE_CMDID);
@@ -3505,7 +3509,7 @@ ath12k_wmi_send_twt_enable_cmd(struct ath12k *ar, u32 pdev_id)
 }
 
 int
-ath12k_wmi_send_twt_disable_cmd(struct ath12k *ar, u32 pdev_id)
+ath12k_wmi_send_twt_disable_cmd(struct ath12k *ar, u32 pdev_id, u32 flags)
 {
 	struct ath12k_wmi_pdev *wmi = ar->wmi;
 	struct ath12k_base *ab = wmi->wmi_ab->ab;
@@ -3523,6 +3527,10 @@ ath12k_wmi_send_twt_disable_cmd(struct ath12k *ar, u32 pdev_id)
 	cmd->tlv_header = ath12k_wmi_tlv_cmd_hdr(WMI_TAG_TWT_DISABLE_CMD,
 						 len);
 	cmd->pdev_id = cpu_to_le32(pdev_id);
+	cmd->flags = cpu_to_le32(flags);
+
+	ath12k_dbg(ab, ATH12K_DBG_WMI, "WMI twt disable pdev id %u flags 0x%x\n",
+		   pdev_id, flags);
 
 	ret = ath12k_wmi_cmd_send(wmi, skb,
 				  WMI_TWT_DISABLE_CMDID);

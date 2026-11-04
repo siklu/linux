@@ -9,7 +9,8 @@
  * (oss/src/mac80211/wlan-open 3314b0461628, vendor.h). Only the generic
  * Wi-Fi and wiphy configuration commands are carried; the numbers are kept
  * unchanged so the QSDK 13.1 cfg80211tool and command tables work as is.
- * The parameters marked QSDK 14.0 keep their QSDK 14.0 numbers.
+ * The parameters marked QSDK 14.0 keep their QSDK 14.0 numbers. The ones
+ * QSDK does not have are numbered from 1001, clear of the QSDK numbers.
  */
 
 #ifndef ATH12K_VENDOR_H
@@ -42,6 +43,14 @@ enum qca_nl80211_vendor_subcmds {
 	QCA_NL80211_VENDOR_SUBCMD_IFACE_RELOAD = 267,
 	QCA_NL80211_VENDOR_SUBCMD_SET_WIPHY_CONFIGURATION = 268,
 	QCA_NL80211_VENDOR_SUBCMD_GET_WIPHY_CONFIGURATION = 269,
+};
+
+/* Generic commands with their own data, from QSDK 14.0 */
+enum qca_wlan_vendor_wifi_param {
+	/* Data: the MAC address of a station of the interface. Value: 0 to
+	 * stop, 1 to allow OFDMA for that station.
+	 */
+	QCA_WLAN_VENDOR_WIFI_PARAM_SCHED_OFDMA_ENABLE = 605,
 };
 
 /* Indexes into ath12k_vendor_events[] */
@@ -114,6 +123,21 @@ enum qca_vendor_vdev_param {
 	QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS = 77,
 	/* enum wmi_channel_width */
 	QCA_WLAN_VENDOR_VDEV_PARAM_CHWIDTH = 80,
+	/* 0 or 1: one bit of the HE or EHT MU mode */
+	QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_OFDMA = 84,
+	QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_OFDMA = 87,
+	/* Not in QSDK. 0 or 1: bits of the HE or EHT MU mode */
+	QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_MUMIMO = 1001,
+	QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_MUMIMO = 1002,
+	QCA_WLAN_VENDOR_VDEV_PARAM_HE_DL_MUMIMO = 1003,
+	QCA_WLAN_VENDOR_VDEV_PARAM_EHT_DL_MUMIMO = 1004,
+	/* Not in QSDK. Best effort EDCA parameters of the interface:
+	 * CW min and CW max (2^n - 1), AIFSN, TXOP limit in units of 32 us
+	 */
+	QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMIN = 1005,
+	QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMAX = 1006,
+	QCA_WLAN_VENDOR_VDEV_PARAM_BE_AIFS = 1007,
+	QCA_WLAN_VENDOR_VDEV_PARAM_BE_TXOP = 1008,
 
 	/* Add new params above */
 	QCA_WLAN_VENDOR_VDEV_PARAM_LAST,
@@ -128,6 +152,11 @@ enum qca_vendor_radio_param {
 	QCA_WLAN_VENDOR_RADIO_PARAM_SLOT_TIME = 58,
 	/* RX ACK timeout in bits 0-15, pre-RX ACK timeout in bits 16-31 */
 	QCA_WLAN_VENDOR_RADIO_PARAM_ACK_TIMEOUT = 59,
+	/* 1: equal RU allocation for DL and UL OFDMA, 0: dynamic */
+	QCA_WLAN_VENDOR_RADIO_PARAM_EQUAL_RU_ALLOCATION_ENABLE = 61,
+	/* Not in QSDK. 0 or 1: broadcast TWT, restricted TWT (R-TWT) */
+	QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST = 1001,
+	QCA_WLAN_VENDOR_RADIO_PARAM_TWT_RTWT = 1002,
 
 	/* Add new params above */
 	QCA_WLAN_VENDOR_RADIO_PARAM_LAST,

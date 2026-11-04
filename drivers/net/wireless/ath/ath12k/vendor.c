@@ -24,6 +24,7 @@
 #include "core.h"
 #include "debug.h"
 #include "mac.h"
+#include "peer.h"
 #include "vendor.h"
 
 static const struct nla_policy
@@ -137,6 +138,221 @@ static int ath12k_vendor_set_fixed_eht_mcs(struct ath12k_link_vif *arvif,
 	return 0;
 }
 
+/* The vendor parameters that are bits of the HE or EHT MU mode */
+static const struct ath12k_vendor_mu_mode_param {
+	u32 param;
+	bool eht;
+	u32 bits;
+} ath12k_vendor_mu_mode_params[] = {
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_OFDMA, false, HE_MODE_UL_OFDMA },
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_OFDMA, true, EHT_MODE_UL_OFDMA },
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_MUMIMO, false, HE_MODE_UL_MUMIMO },
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_MUMIMO, true, EHT_MODE_MUMIMO },
+	/* DL MU-MIMO is sent by the MU beamformer */
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_HE_DL_MUMIMO, false, HE_MODE_MU_TX_BFER },
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_EHT_DL_MUMIMO, true,
+	  EHT_MODE_MU_TX_BFER | EHT_MODE_DL_OFDMA_MUMIMO },
+};
+
+static const struct ath12k_vendor_mu_mode_param *
+ath12k_vendor_find_mu_mode_param(u32 param)
+{
+	int i;
+
+	for (i = 0; i < ARRAY_SIZE(ath12k_vendor_mu_mode_params); i++)
+		if (ath12k_vendor_mu_mode_params[i].param == param)
+			return &ath12k_vendor_mu_mode_params[i];
+
+	return NULL;
+}
+
+/* Force MU mode bits on (value 1) or off (value 0). If the MU mode was
+ * already sent to the firmware it is sent again at once, else the bits are
+ * applied when it is sent. This driver sends the EHT MU mode on AP
+ * interfaces only.
+ */
+static int ath12k_vendor_set_mu_mode(struct ath12k_link_vif *arvif,
+				     const struct ath12k_vendor_mu_mode_param *mp,
+				     u32 value)
+{
+	struct ath12k *ar = arvif->ar;
+	u32 *on = mp->eht ? &arvif->eht_mu_mode_on : &arvif->he_mu_mode_on;
+	u32 *off = mp->eht ? &arvif->eht_mu_mode_off : &arvif->he_mu_mode_off;
+	u32 *mode = mp->eht ? &arvif->eht_mu_mode : &arvif->he_mu_mode;
+	bool sent = mp->eht ? arvif->eht_mu_mode_sent : arvif->he_mu_mode_sent;
+	u32 new_on, new_off, mu_mode;
+	int ret;
+
+	if (value > 1) {
+		ath12k_err(ar->ab, "MU mode value should be 0 or 1\n");
+		return -EINVAL;
+	}
+
+	if (mp->eht && arvif->ahvif->vdev_type != WMI_VDEV_TYPE_AP) {
+		ath12k_err(ar->ab, "EHT MU mode can be set on AP interfaces only\n");
+		return -EOPNOTSUPP;
+	}
+
+	new_on = value ? *on | mp->bits : *on & ~mp->bits;
+	new_off = value ? *off & ~mp->bits : *off | mp->bits;
+
+	if (sent && arvif->is_up) {
+		mu_mode = (*mode | new_on) & ~new_off;
+		ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
+						    mp->eht ? WMI_VDEV_PARAM_SET_EHT_MU_MODE :
+							      WMI_VDEV_PARAM_SET_HEMU_MODE,
+						    mu_mode);
+		if (ret) {
+			ath12k_err(ar->ab, "Failed to send the MU mode to firmware\n");
+			return ret;
+		}
+		*mode = mu_mode;
+	}
+
+	*on = new_on;
+	*off = new_off;
+
+	return 0;
+}
+
+/* 1 if all the bits are set in the MU mode last sent to the firmware,
+ * with the forced bits applied
+ */
+static int ath12k_vendor_get_mu_mode(struct ath12k_link_vif *arvif,
+				     const struct ath12k_vendor_mu_mode_param *mp,
+				     u32 *value)
+{
+	u32 mu_mode;
+
+	if (mp->eht && arvif->ahvif->vdev_type != WMI_VDEV_TYPE_AP)
+		return -EOPNOTSUPP;
+
+	if (mp->eht)
+		mu_mode = (arvif->eht_mu_mode | arvif->eht_mu_mode_on) &
+			  ~arvif->eht_mu_mode_off;
+	else
+		mu_mode = (arvif->he_mu_mode | arvif->he_mu_mode_on) &
+			  ~arvif->he_mu_mode_off;
+
+	*value = (mu_mode & mp->bits) == mp->bits;
+
+	return 0;
+}
+
+/* Set one best effort EDCA parameter of the interface. mac80211 sets all
+ * of them again when the AP or the BSS changes them.
+ */
+static int ath12k_vendor_set_be_wmm(struct ath12k_link_vif *arvif,
+				    u32 param, u32 value)
+{
+	struct ath12k *ar = arvif->ar;
+	struct wmi_wmm_params_arg old = arvif->wmm_params.ac_be;
+	struct wmi_wmm_params_arg *be = &arvif->wmm_params.ac_be;
+	int ret;
+
+	/* all access categories are set once the interface is up */
+	if (!arvif->is_up) {
+		ath12k_err(ar->ab, "EDCA parameters can be set once the interface is up\n");
+		return -ENOTCONN;
+	}
+
+	switch (param) {
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMIN:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMAX:
+		/* 2^n - 1 */
+		if (value > 32767 || (value & (value + 1))) {
+			ath12k_err(ar->ab, "CW should be 2^n - 1, up to 32767\n");
+			return -EINVAL;
+		}
+		if (param == QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMIN)
+			be->cwmin = value;
+		else
+			be->cwmax = value;
+		if (be->cwmin > be->cwmax) {
+			ath12k_err(ar->ab, "CW min %u is above CW max %u\n",
+				   be->cwmin, be->cwmax);
+			*be = old;
+			return -EINVAL;
+		}
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_AIFS:
+		if (value < 1 || value > 15) {
+			ath12k_err(ar->ab, "AIFSN should be between 1 and 15\n");
+			return -EINVAL;
+		}
+		be->aifs = value;
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_TXOP:
+		if (value > U16_MAX) {
+			ath12k_err(ar->ab, "TXOP limit should be up to 65535 (x 32 us)\n");
+			return -EINVAL;
+		}
+		be->txop = value;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	ret = ath12k_wmi_send_wmm_update_cmd(ar, arvif->vdev_id,
+					     &arvif->wmm_params);
+	if (ret) {
+		ath12k_err(ar->ab, "Failed to send the WMM parameters to firmware\n");
+		*be = old;
+	}
+
+	return ret;
+}
+
+static int ath12k_vendor_get_be_wmm(struct ath12k_link_vif *arvif,
+				    u32 param, u32 *value)
+{
+	struct wmi_wmm_params_arg *be = &arvif->wmm_params.ac_be;
+
+	switch (param) {
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMIN:
+		*value = be->cwmin;
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMAX:
+		*value = be->cwmax;
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_AIFS:
+		*value = be->aifs;
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_TXOP:
+		*value = be->txop;
+		break;
+	default:
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Broadcast or restricted TWT on or off. Applied at once if TWT is
+ * enabled, else when it is.
+ */
+static int ath12k_vendor_set_twt(struct ath12k *ar, u32 param, u32 value)
+{
+	bool *cfg = param == QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST ?
+		    &ar->twt_bcast : &ar->twt_rtwt;
+	bool old = *cfg;
+	int ret;
+
+	if (value > 1) {
+		ath12k_err(ar->ab, "TWT value should be 0 or 1\n");
+		return -EINVAL;
+	}
+
+	*cfg = value;
+	ret = ath12k_mac_twt_reconfig(ar);
+	if (ret) {
+		ath12k_err(ar->ab, "Failed to send the TWT configuration to firmware\n");
+		*cfg = old;
+	}
+
+	return ret;
+}
+
 /* Set link-vif level parameters
  * set 'reload' to true to send reload event to userspace
  */
@@ -172,6 +388,22 @@ static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
 		break;
 	case QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS:
 		ret = ath12k_vendor_set_fixed_eht_mcs(arvif, value);
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_OFDMA:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_OFDMA:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_DL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_DL_MUMIMO:
+		ret = ath12k_vendor_set_mu_mode(arvif,
+						ath12k_vendor_find_mu_mode_param(param),
+						value);
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMIN:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMAX:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_AIFS:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_TXOP:
+		ret = ath12k_vendor_set_be_wmm(arvif, param, value);
 		break;
 	default:
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
@@ -247,6 +479,23 @@ static int ath12k_vendor_set_radio_params(struct ath12k *ar,
 			ath12k_err(ar->ab, "Slot Time value should be between 1 and 90");
 			ret = -1;
 		}
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_EQUAL_RU_ALLOCATION_ENABLE:
+		if (value > 1) {
+			ath12k_err(ar->ab, "RU allocation enable value should be 0 or 1");
+			ret = -1;
+			break;
+		}
+		ret = ath12k_wmi_pdev_set_param(ar, WMI_PDEV_PARAM_EQUAL_RU_ALLOCATION_ENABLE,
+						value, ar->pdev->pdev_id);
+		if (!ret)
+			ar->equal_ru_alloc = value;
+		else
+			ath12k_err(ar->ab, "Failed to send WMI_PDEV_PARAM_EQUAL_RU_ALLOCATION_ENABLE to firmware");
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST:
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_RTWT:
+		ret = ath12k_vendor_set_twt(ar, param, value);
 		break;
 	case PARAM_RADIO_TXCHAINSOFT:
 		ret = ath12k_mac_set_tx_antenna(ar, value);
@@ -394,6 +643,22 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 		*value = arvif->fixed_eht_mcs;
 		ret = 0;
 		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_OFDMA:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_OFDMA:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_DL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_DL_MUMIMO:
+		ret = ath12k_vendor_get_mu_mode(arvif,
+						ath12k_vendor_find_mu_mode_param(param),
+						value);
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMIN:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_CWMAX:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_AIFS:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_BE_TXOP:
+		ret = ath12k_vendor_get_be_wmm(arvif, param, value);
+		break;
 	default:
 		ath12k_dbg(NULL, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
@@ -424,6 +689,18 @@ static int ath12k_vendor_get_radio_params(struct ath12k *ar,
 		break;
 	case QCA_WLAN_VENDOR_RADIO_PARAM_ACK_TIMEOUT:
 		*value = ar->ack_timeout;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_EQUAL_RU_ALLOCATION_ENABLE:
+		*value = ar->equal_ru_alloc;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST:
+		*value = ar->twt_bcast;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_RTWT:
+		*value = ar->twt_rtwt;
 		ret = 0;
 		break;
 	case PARAM_RADIO_TXCHAINSOFT:
@@ -512,6 +789,124 @@ static int ath12k_vendor_get_wiphy_params(struct wiphy *wiphy,
 	return ret;
 }
 
+/* The link-vif of the wdev with the link id, the default link if the
+ * link id is invalid
+ */
+static struct ath12k_link_vif *
+ath12k_vendor_find_arvif(struct wiphy *wiphy, struct wireless_dev *wdev,
+			 u8 link_id)
+{
+	struct ieee80211_vif *vif = wdev_to_ieee80211_vif(wdev);
+	struct ath12k_link_vif *arvif;
+	struct ath12k_vif *ahvif;
+
+	if (!vif)
+		return NULL;
+
+	ahvif = ath12k_vif_to_ahvif(vif);
+	if (link_id == INVALID_LINK_ID)
+		arvif = &ahvif->deflink;
+	else if (link_id < ATH12K_NUM_MAX_LINKS)
+		arvif = wiphy_dereference(wiphy, ahvif->link[link_id]);
+	else
+		arvif = NULL;
+
+	if (!arvif || !arvif->ar)
+		return NULL;
+
+	return arvif;
+}
+
+/* A station of the link-vif. It stays valid while the wiphy lock is held:
+ * stations are removed under it.
+ */
+static struct ath12k_link_sta *
+ath12k_vendor_find_arsta(struct ath12k_link_vif *arvif,
+			 struct ath12k_wifi_generic_params *params)
+{
+	struct ath12k_base *ab = arvif->ar->ab;
+	struct ath12k_link_sta *arsta;
+
+	if (!params->data || params->data_len != ETH_ALEN)
+		return NULL;
+
+	spin_lock_bh(&ab->base_lock);
+	arsta = ath12k_link_sta_find_by_addr(ab, params->data);
+	spin_unlock_bh(&ab->base_lock);
+
+	if (!arsta || arsta->arvif != arvif)
+		return NULL;
+
+	return arsta;
+}
+
+/* QSDK 14.0 set_sched_ofdma_enable: stop (0) or allow (1) OFDMA for one
+ * station. QSDK sends peer param 26, which the firmware's wmi_unified.h
+ * names WMI_PEER_PARAM_MU_ENABLE; this sends WMI_PEER_PARAM_OFDMA_ENABLE.
+ */
+static int ath12k_vendor_set_peer_ofdma(struct wiphy *wiphy,
+					struct wireless_dev *wdev,
+					struct ath12k_wifi_generic_params *params)
+{
+	struct ath12k_link_vif *arvif;
+	struct ath12k_link_sta *arsta;
+	int ret;
+
+	lockdep_assert_wiphy(wiphy);
+
+	arvif = ath12k_vendor_find_arvif(wiphy, wdev, params->link_id);
+	if (!arvif)
+		return -EINVAL;
+
+	if (params->value > 1) {
+		ath12k_err(arvif->ar->ab, "OFDMA enable value should be 0 or 1\n");
+		return -EINVAL;
+	}
+
+	arsta = ath12k_vendor_find_arsta(arvif, params);
+	if (!arsta) {
+		ath12k_err(arvif->ar->ab, "No such station on the interface\n");
+		return -ENOENT;
+	}
+
+	ret = ath12k_wmi_set_peer_param(arvif->ar, arsta->addr, arvif->vdev_id,
+					WMI_PEER_PARAM_OFDMA_ENABLE,
+					params->value);
+	if (ret) {
+		ath12k_err(arvif->ar->ab, "Failed to send WMI_PEER_PARAM_OFDMA_ENABLE to firmware\n");
+		return ret;
+	}
+
+	arsta->ofdma_enable_set = true;
+	arsta->ofdma_enable = params->value;
+
+	return 0;
+}
+
+/* The value last set for the station, -1 if none since it connected */
+static int ath12k_vendor_get_peer_ofdma(struct wiphy *wiphy,
+					struct wireless_dev *wdev,
+					struct ath12k_wifi_generic_params *params,
+					u32 *value)
+{
+	struct ath12k_link_vif *arvif;
+	struct ath12k_link_sta *arsta;
+
+	lockdep_assert_wiphy(wiphy);
+
+	arvif = ath12k_vendor_find_arvif(wiphy, wdev, params->link_id);
+	if (!arvif)
+		return -EINVAL;
+
+	arsta = ath12k_vendor_find_arsta(arvif, params);
+	if (!arsta)
+		return -ENOENT;
+
+	*value = arsta->ofdma_enable_set ? arsta->ofdma_enable : (u32)-1;
+
+	return 0;
+}
+
 /* Extract attributes from the NL message */
 static void
 ath12k_vendor_wifi_extract_generic_command_params(struct nlattr **tb,
@@ -592,6 +987,12 @@ static int ath12k_vendor_wifi_config_handler(struct wiphy *wiphy,
 					  "Failed to set wifi params\n");
 				return -EINVAL;
 			}
+			break;
+		case QCA_WLAN_VENDOR_WIFI_PARAM_SCHED_OFDMA_ENABLE:
+			ret = ath12k_vendor_set_peer_ofdma(wiphy, wdev,
+							   &wifi_params);
+			if (ret)
+				return ret;
 			break;
 		default:
 			ath12k_dbg(NULL, ATH12K_DBG_CFG,
@@ -690,6 +1091,12 @@ static int ath12k_vendor_get_wifi_config_handler(struct wiphy *wiphy,
 					  "Failed to get wifi params\n");
 				return -EINVAL;
 			}
+			break;
+		case QCA_WLAN_VENDOR_WIFI_PARAM_SCHED_OFDMA_ENABLE:
+			ret = ath12k_vendor_get_peer_ofdma(wiphy, wdev,
+							   &wifi_params, &value);
+			if (ret)
+				return ret;
 			break;
 		default:
 			ath12k_dbg(NULL, ATH12K_DBG_CFG,

@@ -376,7 +376,11 @@ static int ath12k_wifi7_dp_rx_h_mpdu(struct ath12k_pdev_dp *dp_pdev,
 	rxcb = ATH12K_SKB_RXCB(msdu);
 	rxcb->is_mcbc = rx_info->is_mcbc;
 
-	if (rxcb->is_mcbc)
+	/* The MPDU start TLV is valid only in the first MSDU of an MPDU.
+	 * For the other A-MSDU subframes it holds stale data, so keep the
+	 * peer id from the REO ring, which is valid for every MSDU.
+	 */
+	if (rxcb->is_mcbc && rx_info->is_first_msdu)
 		rxcb->peer_id = rx_info->peer_id;
 
 	peer = ath12k_dp_peer_find_by_peerid(dp_pdev, rxcb->peer_id);

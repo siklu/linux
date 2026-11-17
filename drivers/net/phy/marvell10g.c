@@ -186,6 +186,10 @@ struct mv3310_priv {
 	char *hwmon_name;
 
 	struct mv3310_ptp_priv *ptp_priv;
+	/* mv3310_start() has looked for the PTP block (M-unit) */
+	bool ptp_probed;
+	/* The first power-up is complete: no more SWRST on power-up */
+	bool swrst_done;
 };
 
 #ifdef CONFIG_MARVELL_10G_PHY_PTP
@@ -386,15 +390,11 @@ static int mv3310_check_firmware(struct phy_device *phydev);
 static int mv3310_power_up(struct phy_device *phydev)
 {
 	struct mv3310_priv *priv = dev_get_drvdata(&phydev->mdio.dev);
-	bool ptp_was_configured;
 	int ret;
 
 	ret = mv3310_check_firmware(phydev);
 	if (ret < 0)
 		return ret;
-
-	/* Capture PTP configured state before power_up potentially sets it. */
-	ptp_was_configured = mv3310_ptp_is_configured(priv->ptp_priv);
 
 	ret = mv3310_ptp_power_up(priv->ptp_priv);
 	if (ret < 0)
@@ -414,17 +414,20 @@ static int mv3310_power_up(struct phy_device *phydev)
 	    priv->firmware_ver < 0x00030000)
 		return ret;
 
-	if (ptp_was_configured) {
-		/* Skip SWRST if the M-unit was already configured on prior power cycles.
-		 * SWRST (bit 15) resets the entire port and clears M_UNIT_PWRUP,
-		 * forcing WMC auto-negotiation to restart. A MAC SerDes transition
-		 * between ptp_start calls can stall WMC AN, causing the M-unit to
-		 * silently drop all frames. Once the M-unit is configured it must not
-		 * be disturbed. Reproducibility is dependent on timing:
+	if (priv->swrst_done) {
+		/* Issue SWRST only until the first power-up is complete.
+		 * SWRST (bit 15) resets the entire port. This function runs
+		 * up to three times per ip link up, so a new SWRST can come
+		 * while the last one is still running (it can take ~160 ms)
+		 * or while the MAC changes SerDes mode. Then the port stops
+		 * passing RX frames. This was seen on the 88X3310 both with
+		 * and without the PTP M-unit. With the M-unit, SWRST also
+		 * clears M_UNIT_PWRUP and restarts WMC auto-negotiation.
+		 * With the SWRST, reproducibility depends on the delay:
 		 *  - with no delay it is ~1/5
 		 *  - with 10ms delay it is ~1/50
 		 *  - with 100ms delay it is ~1/150
-		 *  - with current solution it doesn't reproduce
+		 *  - without SWRST it doesn't reproduce
 		 */
 		return ret;
 	}
@@ -432,6 +435,14 @@ static int mv3310_power_up(struct phy_device *phydev)
 	ret = phy_set_bits_mmd(phydev, MDIO_MMD_VEND2, MV_V2_PORT_CTRL,
 				MV_V2_33X0_PORT_CTRL_SWRST);
 	msleep(100);
+
+	/* The first power-up is complete once the PTP block has been
+	 * looked for and, if present, configured.
+	 */
+	if (!ret && priv->ptp_probed &&
+	    (!priv->ptp_priv || mv3310_ptp_is_configured(priv->ptp_priv)))
+		priv->swrst_done = true;
+
 	return ret;
 }
 
@@ -793,7 +804,13 @@ static int mv3310_start(struct phy_device *phydev)
 	if (!priv->ptp_priv)
 	{
 		priv->ptp_priv = mv3310_ptp_probe(phydev);
+		/* A PTP block that an earlier probe missed still needs
+		 * its first power-up with SWRST.
+		 */
+		if (priv->ptp_priv)
+			priv->swrst_done = false;
 	}
+	priv->ptp_probed = true;
 
 	return 0;
 }

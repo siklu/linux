@@ -105,9 +105,9 @@ struct mv3310_ptp_priv {
 	struct mii_timestamper mii_ts;
 	int old_speed; /* Last speed used to set MRU */
 	bool extts_enabled;
-	/* True once ptp_power_up has completed successfully.  While set,
-	 * ptp_power_up is a no-op (M-unit stays running) and mv3310_power_up
-	 * skips SWRST (which would clear M_UNIT_PWRUP and force WMC AN to
+	/* True once ptp_power_up has completed successfully. With it set,
+	 * mv3310_power_up() treats the first power-up as complete and stops
+	 * issuing SWRST (which would clear M_UNIT_PWRUP and force WMC AN to
 	 * restart, causing the 1/150 silent frame-drop race).
 	 */
 	bool configured;

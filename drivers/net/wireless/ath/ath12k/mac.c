@@ -20,6 +20,7 @@
 #include "debugfs.h"
 #include "hif.h"
 #include "wow.h"
+#include "vendor.h"
 #include "debugfs_sta.h"
 #include "dp.h"
 #include "dp_cmn.h"
@@ -3684,12 +3685,17 @@ static int ath12k_mac_set_he_txbf_conf(struct ath12k_link_vif *arvif)
 			value |= u32_encode_bits(HE_SU_BFEE_ENABLE, HE_MODE_SU_TX_BFEE);
 	}
 
+	value = (value | arvif->he_mu_mode_on) & ~arvif->he_mu_mode_off;
+
 	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, param, value);
 	if (ret) {
 		ath12k_warn(ar->ab, "failed to set vdev %d HE MU mode: %d\n",
 			    arvif->vdev_id, ret);
 		return ret;
 	}
+
+	arvif->he_mu_mode = value;
+	arvif->he_mu_mode_sent = true;
 
 	param = WMI_VDEV_PARAM_SET_HE_SOUNDING_MODE;
 	value =	u32_encode_bits(HE_VHT_SOUNDING_MODE_ENABLE, HE_VHT_SOUNDING_MODE) |
@@ -3809,12 +3815,17 @@ static int ath12k_mac_set_eht_txbf_conf(struct ath12k_link_vif *arvif)
 						 EHT_MODE_SU_TX_BFEE);
 	}
 
+	value = (value | arvif->eht_mu_mode_on) & ~arvif->eht_mu_mode_off;
+
 	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, param, value);
 	if (ret) {
 		ath12k_warn(ar->ab, "failed to set vdev %d EHT MU mode: %d\n",
 			    arvif->vdev_id, ret);
 		return ret;
 	}
+
+	arvif->eht_mu_mode = value;
+	arvif->eht_mu_mode_sent = true;
 
 	return 0;
 }
@@ -3920,6 +3931,9 @@ static void ath12k_bss_assoc(struct ath12k *ar,
 
 	rcu_read_unlock();
 
+	if (bss_conf->he_support)
+		hemode = (hemode | arvif->he_mu_mode_on) & ~arvif->he_mu_mode_off;
+
 	/* keep this before ath12k_wmi_send_peer_assoc_cmd() */
 	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
 					    WMI_VDEV_PARAM_SET_HEMU_MODE, hemode);
@@ -3927,6 +3941,11 @@ static void ath12k_bss_assoc(struct ath12k *ar,
 		ath12k_warn(ar->ab, "failed to submit vdev param txbf 0x%x: %d\n",
 			    hemode, ret);
 		return;
+	}
+
+	if (bss_conf->he_support) {
+		arvif->he_mu_mode = hemode;
+		arvif->he_mu_mode_sent = true;
 	}
 
 	peer_arg->is_assoc = true;
@@ -4987,9 +5006,9 @@ skip_vdev_up:
 
 	if (changed & BSS_CHANGED_TWT) {
 		if (info->twt_requester || info->twt_responder)
-			ath12k_wmi_send_twt_enable_cmd(ar, ar->pdev->pdev_id);
-		else
-			ath12k_wmi_send_twt_disable_cmd(ar, ar->pdev->pdev_id);
+			ath12k_mac_twt_enable(ar, info->twt_responder);
+		else if (!ath12k_wmi_send_twt_disable_cmd(ar, ar->pdev->pdev_id, 0))
+			ar->twt_enabled = false;
 	}
 
 	if (changed & BSS_CHANGED_HE_OBSS_PD) {
@@ -10437,6 +10456,9 @@ int ath12k_mac_vdev_create(struct ath12k *ar, struct ath12k_link_vif *arvif)
 		goto err;
 	}
 
+	/* the vdev id may have been used before: forget its WMI values */
+	memset(&ar->vendor_vdev_wmi[vdev_id], 0, sizeof(ar->vendor_vdev_wmi[0]));
+
 	ret = ath12k_wmi_vdev_create(ar, arvif->bssid, &vdev_arg);
 	if (ret) {
 		ath12k_warn(ab, "failed to create WMI vdev %d: %d\n",
@@ -11074,6 +11096,71 @@ int ath12k_mac_op_set_antenna(struct ieee80211_hw *hw, int radio_idx,
 	return ret;
 }
 EXPORT_SYMBOL(ath12k_mac_op_set_antenna);
+
+/* Set the TX or RX chain mask of one radio, keeping the other one */
+int ath12k_mac_set_tx_antenna(struct ath12k *ar, u32 tx_ant)
+{
+	return __ath12k_set_antenna(ar, tx_ant, ar->cfg_rx_chainmask);
+}
+
+int ath12k_mac_set_rx_antenna(struct ath12k *ar, u32 rx_ant)
+{
+	return __ath12k_set_antenna(ar, ar->cfg_tx_chainmask, rx_ant);
+}
+
+/* Enable TWT in the firmware. Without broadcast TWT this enables
+ * individual TWT for the requester and the responder. With broadcast or
+ * restricted TWT (set through the QCA vendor commands) it enables
+ * individual and broadcast TWT for the role of the BSS only, as QSDK 13.1
+ * does: the firmware answers a second enable with "already enabled".
+ */
+int ath12k_mac_twt_enable(struct ath12k *ar, bool responder)
+{
+	u32 flags = 0;
+	int ret;
+
+	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
+
+	if (ar->twt_bcast || ar->twt_rtwt) {
+		flags = WMI_TWT_EN_DIS_FLAG_SPLIT_CONFIG |
+			WMI_TWT_EN_DIS_FLAG_BTWT |
+			WMI_TWT_EN_DIS_FLAG_I_B_TWT;
+		if (ar->twt_rtwt)
+			flags |= WMI_TWT_EN_DIS_FLAG_B_R_TWT;
+		if (responder)
+			flags |= WMI_TWT_EN_DIS_FLAG_RESPONDER;
+	}
+
+	ret = ath12k_wmi_send_twt_enable_cmd(ar, ar->pdev->pdev_id, flags);
+	if (!ret) {
+		ar->twt_enabled = true;
+		ar->twt_responder = responder;
+	}
+
+	return ret;
+}
+
+/* Apply a changed broadcast or restricted TWT setting. The firmware does
+ * not add broadcast TWT to an enabled role, so TWT is disabled first.
+ * If TWT is not enabled, the setting is used when it is.
+ */
+int ath12k_mac_twt_reconfig(struct ath12k *ar)
+{
+	int ret;
+
+	lockdep_assert_wiphy(ath12k_ar_to_hw(ar)->wiphy);
+
+	if (!ar->twt_enabled)
+		return 0;
+
+	ret = ath12k_wmi_send_twt_disable_cmd(ar, ar->pdev->pdev_id, 0);
+	if (ret)
+		return ret;
+
+	ar->twt_enabled = false;
+
+	return ath12k_mac_twt_enable(ar, ar->twt_responder);
+}
 
 static int ath12k_mac_ampdu_action(struct ieee80211_hw *hw,
 				   struct ieee80211_vif *vif,
@@ -14879,6 +14966,8 @@ static int ath12k_mac_hw_register(struct ath12k_hw *ah)
 	 */
 	for_each_ar(ah, ar, i)
 		complete_all(&ar->regd_update_completed);
+
+	ath12k_vendor_register(ah);
 
 	ret = ieee80211_register_hw(hw);
 	if (ret) {

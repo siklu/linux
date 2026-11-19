@@ -4904,10 +4904,13 @@ ath12k_htt_print_rx_pdev_rate_stats_tlv(const void *tag_buf, u16 tag_len,
 	for (j = 0; j < ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS; j++) {
 		len += scnprintf(buf + len, buf_len - len,
 				 "pilot_evm_db[%u] =", j);
-		len += print_array_to_buf(buf, len, NULL,
-					  htt_stats_buf->rx_pil_evm_db[j],
-					  ATH12K_HTT_RX_PDEV_STATS_RXEVM_MAX_PILOTS_NSS,
-					  "\n");
+		for (i = 0; i < ATH12K_HTT_RX_PDEV_STATS_RXEVM_MAX_PILOTS_NSS; i++)
+			len += scnprintf(buf + len,
+					 buf_len - len,
+					 " %u:%d,", i,
+					 a_sle32_to_cpu(htt_stats_buf->rx_pil_evm_db[j][i]));
+		len--;
+		len += scnprintf(buf + len, buf_len - len, "\n");
 	}
 
 	len += scnprintf(buf + len, buf_len - len, "pilot_evm_db_mean =");
@@ -4915,7 +4918,7 @@ ath12k_htt_print_rx_pdev_rate_stats_tlv(const void *tag_buf, u16 tag_len,
 		len += scnprintf(buf + len,
 				 buf_len - len,
 				 " %u:%d,", i,
-				 le32_to_cpu(htt_stats_buf->rx_pilot_evm_db_mean[i]));
+				 a_sle32_to_cpu(htt_stats_buf->rx_pilot_evm_db_mean[i]));
 	len--;
 	len += scnprintf(buf + len, buf_len - len, "\n");
 
@@ -4985,9 +4988,13 @@ ath12k_htt_print_rx_pdev_rate_ext_stats_tlv(const void *tag_buf, u16 tag_len,
 	u8 *buf = stats_req->buf;
 	u32 len = stats_req->buf_len;
 	u32 buf_len = ATH12K_HTT_STATS_BUF_SIZE;
-	u8 j;
+	u8 i, j;
 
-	if (tag_len < sizeof(*htt_stats_buf))
+	/* Firmware without reduced_rx_bw and the ext_2 subbands sends a
+	 * shorter TLV; print what it has.
+	 */
+	if (tag_len < offsetof(struct ath12k_htt_rx_pdev_rate_ext_stats_tlv,
+			       reduced_rx_bw))
 		return;
 
 	len += scnprintf(buf + len, buf_len - len, "HTT_RX_PDEV_RATE_EXT_STATS_TLV:\n");
@@ -5045,6 +5052,57 @@ ath12k_htt_print_rx_pdev_rate_ext_stats_tlv(const void *tag_buf, u16 tag_len,
 					  "\n");
 	}
 
+	/* Index = 20 MHz subband, continuing subbands 0-3 of the rate TLV */
+	for (j = 0; j < ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS; j++) {
+		len += scnprintf(buf + len, buf_len - len,
+				 "rssi_chain_ext[%u] =", j);
+		for (i = 0; i < ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_COUNTERS; i++)
+			len += scnprintf(buf + len, buf_len - len, " %u:%u,",
+					 i + ATH12K_HTT_RX_PDEV_STATS_NUM_BW_COUNTERS,
+					 htt_stats_buf->rssi_chain_ext[j][i]);
+		len--;
+		len += scnprintf(buf + len, buf_len - len, "\n");
+	}
+
+	for (j = 0; j < ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS; j++) {
+		len += scnprintf(buf + len, buf_len - len,
+				 "rx_per_chain_rssi_ext_in_dbm[%u] =", j);
+		for (i = 0; i < ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_COUNTERS; i++)
+			len += scnprintf(buf + len, buf_len - len, " %u:%d,",
+					 i + ATH12K_HTT_RX_PDEV_STATS_NUM_BW_COUNTERS,
+					 htt_stats_buf->rx_per_chain_rssi_ext_in_dbm[j][i]);
+		len--;
+		len += scnprintf(buf + len, buf_len - len, "\n");
+	}
+
+	if (tag_len < sizeof(*htt_stats_buf))
+		goto out;
+
+	for (j = 0; j < ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS; j++) {
+		len += scnprintf(buf + len, buf_len - len,
+				 "rssi_chain_ext_2[%u] =", j);
+		for (i = 0; i < ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_2_COUNTERS; i++)
+			len += scnprintf(buf + len, buf_len - len, " %u:%u,",
+					 i + ATH12K_HTT_RX_PDEV_STATS_NUM_BW_COUNTERS +
+					 ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_COUNTERS,
+					 htt_stats_buf->rssi_chain_ext_2[j][i]);
+		len--;
+		len += scnprintf(buf + len, buf_len - len, "\n");
+	}
+
+	for (j = 0; j < ATH12K_HTT_RX_PDEV_STATS_NUM_SPATIAL_STREAMS; j++) {
+		len += scnprintf(buf + len, buf_len - len,
+				 "rx_per_chain_rssi_ext_2_in_dbm[%u] =", j);
+		for (i = 0; i < ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_2_COUNTERS; i++)
+			len += scnprintf(buf + len, buf_len - len, " %u:%d,",
+					 i + ATH12K_HTT_RX_PDEV_STATS_NUM_BW_COUNTERS +
+					 ATH12K_HTT_RX_PDEV_STATS_NUM_BW_EXT_COUNTERS,
+					 htt_stats_buf->rx_per_chain_rssi_ext_2_in_dbm[j][i]);
+		len--;
+		len += scnprintf(buf + len, buf_len - len, "\n");
+	}
+
+out:
 	stats_req->buf_len = len;
 }
 

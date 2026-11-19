@@ -316,6 +316,22 @@ struct ath12k_rekey_data {
 	bool enable_offload;
 };
 
+/* Values last sent to the firmware, by the driver or through the QCA vendor
+ * commands, of the WMI parameters in ath12k_vendor_vdev_wmi_params[] or
+ * ath12k_vendor_pdev_wmi_params[] of vendor.c, at the same index. The
+ * firmware cannot be asked for them.
+ */
+#define ATH12K_VENDOR_WMI_PARAMS_MAX 32
+
+struct ath12k_vendor_wmi_vals {
+	/* bit n: val[n] was sent */
+	DECLARE_BITMAP(sent, ATH12K_VENDOR_WMI_PARAMS_MAX);
+	u32 val[ATH12K_VENDOR_WMI_PARAMS_MAX];
+};
+
+/* vdev ids index the u64 vdev maps */
+#define ATH12K_VENDOR_MAX_VDEVS 64
+
 struct ath12k_link_vif {
 	u32 vdev_id;
 	u32 beacon_interval;
@@ -365,6 +381,23 @@ struct ath12k_link_vif {
 
 	bool set_wds_vdev_param;
 	bool nawds_enabled;
+
+	/* fixed EHT MCS last set through the QCA vendor commands */
+	u32 fixed_eht_mcs;
+	bool fixed_eht_mcs_set;
+
+	/* HE and EHT MU mode bits (WMI_VDEV_PARAM_SET_HEMU_MODE and
+	 * WMI_VDEV_PARAM_SET_EHT_MU_MODE) forced on or off through the QCA
+	 * vendor commands, and the MU mode values last sent to the firmware
+	 */
+	u32 he_mu_mode_on;
+	u32 he_mu_mode_off;
+	u32 eht_mu_mode_on;
+	u32 eht_mu_mode_off;
+	u32 he_mu_mode;
+	u32 eht_mu_mode;
+	bool he_mu_mode_sent;
+	bool eht_mu_mode_sent;
 };
 
 struct ath12k_vif {
@@ -527,6 +560,12 @@ struct ath12k_link_sta {
 	 /* for firmware use only */
 	u8 link_idx;
 
+	/* per peer OFDMA (WMI_PEER_PARAM_OFDMA_ENABLE), if set through the
+	 * QCA vendor command
+	 */
+	bool ofdma_enable_set;
+	bool ofdma_enable;
+
 	/* peer addr based rhashtable list pointer */
 	struct rhash_head rhash_addr;
 };
@@ -669,6 +708,17 @@ struct ath12k {
 	u32 power_scale;
 	u32 chan_tx_pwr;
 	u32 rts_threshold;
+	/* set through the QCA vendor commands */
+	bool twt_bcast;
+	bool twt_rtwt;
+	/* TWT enabled in the firmware (WMI_TWT_ENABLE_CMDID sent), and
+	 * whether for a responder (AP) or a requester (station) BSS
+	 */
+	bool twt_enabled;
+	bool twt_responder;
+	/* see struct ath12k_vendor_wmi_vals */
+	struct ath12k_vendor_wmi_vals vendor_pdev_wmi;
+	struct ath12k_vendor_wmi_vals vendor_vdev_wmi[ATH12K_VENDOR_MAX_VDEVS];
 	u32 num_stations;
 	u32 max_num_stations;
 

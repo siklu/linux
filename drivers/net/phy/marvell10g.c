@@ -202,7 +202,6 @@ int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
 void mv3310_ptp_get_strings(u8 *data);
 void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
 			  struct ethtool_stats *stats, u64 *data);
-bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv);
 #else
 static inline struct mv3310_ptp_priv *
 mv3310_ptp_probe(struct phy_device *phydev)
@@ -235,10 +234,6 @@ static inline void mv3310_ptp_get_strings(u8 *data)
 static inline void mv3310_ptp_get_stats(struct mv3310_ptp_priv *priv,
 					struct ethtool_stats *stats, u64 *data)
 {
-}
-static inline bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv)
-{
-	return false;
 }
 #endif
 
@@ -437,10 +432,10 @@ static int mv3310_power_up(struct phy_device *phydev)
 	msleep(100);
 
 	/* The first power-up is complete once the PTP block has been
-	 * looked for and, if present, configured.
+	 * looked for. If it is present, mv3310_ptp_power_up() above
+	 * has configured it.
 	 */
-	if (!ret && priv->ptp_probed &&
-	    (!priv->ptp_priv || mv3310_ptp_is_configured(priv->ptp_priv)))
+	if (!ret && priv->ptp_probed)
 		priv->swrst_done = true;
 
 	return ret;

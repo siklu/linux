@@ -105,12 +105,6 @@ struct mv3310_ptp_priv {
 	struct mii_timestamper mii_ts;
 	int old_speed; /* Last speed used to set MRU */
 	bool extts_enabled;
-	/* True once ptp_power_up has completed successfully. With it set,
-	 * mv3310_power_up() treats the first power-up as complete and stops
-	 * issuing SWRST (which would clear M_UNIT_PWRUP and force WMC AN to
-	 * restart, causing the 1/150 silent frame-drop race).
-	 */
-	bool configured;
 };
 
 struct mv3310_ptp_counter {
@@ -148,7 +142,6 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_power_down(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_start(struct mv3310_ptp_priv *priv);
 int mv3310_ptp_update(struct mv3310_ptp_priv *priv);
-bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv);
 
 /* Get statistics from the PHY using ethtool */
 int mv3310_ptp_get_sset_count(struct mv3310_ptp_priv *priv);
@@ -286,11 +279,6 @@ struct mv3310_ptp_priv *mv3310_ptp_probe(struct phy_device *phydev)
 	return priv;
 }
 
-bool mv3310_ptp_is_configured(struct mv3310_ptp_priv *priv)
-{
-	return priv && priv->configured;
-}
-
 int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 {
 	int ret;
@@ -325,9 +313,6 @@ int mv3310_ptp_power_up(struct mv3310_ptp_priv *priv)
 	   1588TC accuracy measurements. */
 	ret |= mv3310_clear_ptp_reg_bits(phydev, MV_V2_SLC_CFG_GEN,
 					 MV_V2_SLC_CFG_GEN_EGR_SF_EN);
-
-	if (ret == 0)
-		priv->configured = true;
 
 unlock_out:
 	mutex_unlock(&priv->lock);

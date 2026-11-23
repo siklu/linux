@@ -689,6 +689,40 @@ ath12k_wifi7_dp_rx_process_received_packets(struct ath12k_dp *dp,
 	rcu_read_unlock();
 }
 
+union ath12k_wifi7_reo_dest_copy {
+	struct hal_reo_dest_ring desc;
+	u64 word[4];
+};
+
+/* The REO destination ring is coherent DMA memory, which is mapped uncached
+ * on a non-coherent SoC, so every load from it stalls, and the stalls of
+ * back-to-back loads add up. Fetch the whole 32-byte entry with as few
+ * loads as possible and parse the copy, instead of loading each field
+ * (some of them twice) from the ring. On arm64 that is two 16-byte load
+ * pairs; the ring base and the entries are 8-byte aligned.
+ */
+static inline void
+ath12k_wifi7_dp_rx_copy_reo_desc(union ath12k_wifi7_reo_dest_copy *copy,
+				 const struct hal_reo_dest_ring *ring_desc)
+{
+	const u64 *src = (const u64 *)ring_desc;
+
+	BUILD_BUG_ON(sizeof(*ring_desc) != sizeof(copy->word));
+
+#ifdef CONFIG_ARM64
+	asm volatile("ldp %0, %1, [%4]\n\t"
+		     "ldp %2, %3, [%4, #16]"
+		     : "=&r" (copy->word[0]), "=&r" (copy->word[1]),
+		       "=&r" (copy->word[2]), "=&r" (copy->word[3])
+		     : "r" (src), "m" (*(const u64 (*)[4])src));
+#else
+	copy->word[0] = READ_ONCE(src[0]);
+	copy->word[1] = READ_ONCE(src[1]);
+	copy->word[2] = READ_ONCE(src[2]);
+	copy->word[3] = READ_ONCE(src[3]);
+#endif
+}
+
 int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 			       struct napi_struct *napi, int budget)
 {
@@ -701,7 +735,9 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 	int num_buffs_reaped[ATH12K_MAX_DEVICES] = {};
 	struct ath12k_rx_desc_info *desc_info;
 	struct dp_rxdma_ring *rx_ring = &dp->rx_refill_buf_ring;
-	struct hal_reo_dest_ring *desc;
+	union ath12k_wifi7_reo_dest_copy desc_copy;
+	struct hal_reo_dest_ring *desc = &desc_copy.desc;
+	struct hal_reo_dest_ring *ring_desc;
 	struct ath12k_dp *partner_dp;
 	struct sk_buff_head msdu_list;
 	struct ath12k_skb_rxcb *rxcb;
@@ -724,11 +760,13 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 try_again:
 	ath12k_hal_srng_access_begin(ab, srng);
 
-	while ((desc = ath12k_hal_srng_dst_get_next_entry(ab, srng))) {
+	while ((ring_desc = ath12k_hal_srng_dst_get_next_entry(ab, srng))) {
 		struct rx_mpdu_desc *mpdu_info;
 		struct rx_msdu_desc *msdu_info;
 		enum hal_reo_dest_ring_push_reason push_reason;
 		u32 cookie;
+
+		ath12k_wifi7_dp_rx_copy_reo_desc(&desc_copy, ring_desc);
 
 		cookie = le32_get_bits(desc->buf_addr_info.info1,
 				       BUFFER_ADDR_INFO1_SW_COOKIE);

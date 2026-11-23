@@ -20,6 +20,7 @@
 #include "debugfs.h"
 #include "hif.h"
 #include "wow.h"
+#include "vendor.h"
 #include "debugfs_sta.h"
 #include "dp.h"
 #include "dp_cmn.h"
@@ -3684,12 +3685,17 @@ static int ath12k_mac_set_he_txbf_conf(struct ath12k_link_vif *arvif)
 			value |= u32_encode_bits(HE_SU_BFEE_ENABLE, HE_MODE_SU_TX_BFEE);
 	}
 
+	value = (value | arvif->he_mu_mode_on) & ~arvif->he_mu_mode_off;
+
 	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, param, value);
 	if (ret) {
 		ath12k_warn(ar->ab, "failed to set vdev %d HE MU mode: %d\n",
 			    arvif->vdev_id, ret);
 		return ret;
 	}
+
+	arvif->he_mu_mode = value;
+	arvif->he_mu_mode_sent = true;
 
 	param = WMI_VDEV_PARAM_SET_HE_SOUNDING_MODE;
 	value =	u32_encode_bits(HE_VHT_SOUNDING_MODE_ENABLE, HE_VHT_SOUNDING_MODE) |
@@ -3809,12 +3815,17 @@ static int ath12k_mac_set_eht_txbf_conf(struct ath12k_link_vif *arvif)
 						 EHT_MODE_SU_TX_BFEE);
 	}
 
+	value = (value | arvif->eht_mu_mode_on) & ~arvif->eht_mu_mode_off;
+
 	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, param, value);
 	if (ret) {
 		ath12k_warn(ar->ab, "failed to set vdev %d EHT MU mode: %d\n",
 			    arvif->vdev_id, ret);
 		return ret;
 	}
+
+	arvif->eht_mu_mode = value;
+	arvif->eht_mu_mode_sent = true;
 
 	return 0;
 }
@@ -3920,6 +3931,9 @@ static void ath12k_bss_assoc(struct ath12k *ar,
 
 	rcu_read_unlock();
 
+	if (bss_conf->he_support)
+		hemode = (hemode | arvif->he_mu_mode_on) & ~arvif->he_mu_mode_off;
+
 	/* keep this before ath12k_wmi_send_peer_assoc_cmd() */
 	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id,
 					    WMI_VDEV_PARAM_SET_HEMU_MODE, hemode);
@@ -3927,6 +3941,11 @@ static void ath12k_bss_assoc(struct ath12k *ar,
 		ath12k_warn(ar->ab, "failed to submit vdev param txbf 0x%x: %d\n",
 			    hemode, ret);
 		return;
+	}
+
+	if (bss_conf->he_support) {
+		arvif->he_mu_mode = hemode;
+		arvif->he_mu_mode_sent = true;
 	}
 
 	peer_arg->is_assoc = true;
@@ -14879,6 +14898,8 @@ static int ath12k_mac_hw_register(struct ath12k_hw *ah)
 	 */
 	for_each_ar(ah, ar, i)
 		complete_all(&ar->regd_update_completed);
+
+	ath12k_vendor_register(ah);
 
 	ret = ieee80211_register_hw(hw);
 	if (ret) {

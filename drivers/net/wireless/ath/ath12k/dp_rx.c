@@ -4,6 +4,7 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
+#include <linux/bpf.h>
 #include <linux/ieee80211.h>
 #include <linux/kernel.h>
 #include <linux/skbuff.h>
@@ -79,6 +80,17 @@ int ath12k_dp_rx_bufs_replenish(struct ath12k_dp *dp,
 	dma_addr_t paddr;
 	struct ath12k_rx_desc_info *rx_desc;
 	enum hal_rx_buf_return_buf_manager mgr = dp->hal->hal_params->rx_buf_rbm;
+	u32 xdp_headroom = 0;
+
+	/* The frame starts after the Rx TLVs that the hardware writes at
+	 * the start of the buffer. Generic XDP, which an AF_XDP socket on
+	 * the netdev uses, wants XDP_PACKET_HEADROOM in front of the frame
+	 * and reallocates and copies the head of every skb that has less.
+	 * Reserve the difference.
+	 */
+	if (NET_SKB_PAD + dp->hal->hal_desc_sz < XDP_PACKET_HEADROOM)
+		xdp_headroom = XDP_PACKET_HEADROOM - NET_SKB_PAD -
+			       dp->hal->hal_desc_sz;
 
 	req_entries = min(req_entries, rx_ring->bufs_max);
 
@@ -110,9 +122,11 @@ int ath12k_dp_rx_bufs_replenish(struct ath12k_dp *dp,
 
 	while (num_remain > 0) {
 		skb = dev_alloc_skb(DP_RX_BUFFER_SIZE +
-				    DP_RX_BUFFER_ALIGN_SIZE);
+				    DP_RX_BUFFER_ALIGN_SIZE + xdp_headroom);
 		if (!skb)
 			break;
+
+		skb_reserve(skb, xdp_headroom);
 
 		if (!IS_ALIGNED((unsigned long)skb->data,
 				DP_RX_BUFFER_ALIGN_SIZE)) {

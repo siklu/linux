@@ -318,6 +318,10 @@ int ath12k_dp_rx_pdev_reo_setup(struct ath12k_base *ab)
 	int i;
 
 	for (i = 0; i < DP_REO_DST_RING_MAX; i++) {
+		/* Read once per entry on the hot path; see
+		 * ath12k_wifi7_dp_rx_process().
+		 */
+		dp->reo_dst_ring[i].cached = true;
 		ret = ath12k_dp_srng_setup(ab, &dp->reo_dst_ring[i],
 					   HAL_REO_DST, i, 0,
 					   DP_REO_DST_RING_SIZE);

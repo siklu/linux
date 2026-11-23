@@ -696,12 +696,11 @@ union ath12k_wifi7_reo_dest_copy {
 	u64 word[4];
 };
 
-/* The REO destination ring is coherent DMA memory, which is mapped uncached
- * on a non-coherent SoC, so every load from it stalls, and the stalls of
- * back-to-back loads add up. Fetch the whole 32-byte entry with as few
- * loads as possible and parse the copy, instead of loading each field
- * (some of them twice) from the ring. On arm64 that is two 16-byte load
- * pairs; the ring base and the entries are 8-byte aligned.
+/* Fetch the whole 32-byte REO entry with as few loads as possible and
+ * parse the copy, instead of loading each field (some of them twice) from
+ * the ring. On arm64 that is two 16-byte load pairs; the ring base and the
+ * entries are 8-byte aligned. This matters most when the ring is uncached,
+ * where every load stalls and the stalls of back-to-back loads add up.
  */
 static inline void
 ath12k_wifi7_dp_rx_copy_reo_desc(union ath12k_wifi7_reo_dest_copy *copy,
@@ -726,7 +725,7 @@ ath12k_wifi7_dp_rx_copy_reo_desc(union ath12k_wifi7_reo_dest_copy *copy,
 }
 
 /* How many REO entries past the current one the Rx loop reads ahead. */
-#define ATH12K_WIFI7_RX_AHEAD	2
+#define ATH12K_WIFI7_RX_AHEAD	3
 
 /* Return the entry @ahead entries past the one the last
  * ath12k_hal_srng_dst_get_next_entry() returned, or NULL if the hardware
@@ -787,6 +786,7 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 	struct ath12k_rx_desc_info *ahead_info;
 	struct hal_reo_dest_ring *ring_desc;
 	struct hal_reo_dest_ring *desc;
+	struct dp_srng *reo_ring;
 	u32 cur = 0, num_ahead;
 	struct ath12k_dp *partner_dp;
 	struct sk_buff_head msdu_list;
@@ -802,12 +802,17 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 	for (device_id = 0; device_id < ATH12K_MAX_DEVICES; device_id++)
 		INIT_LIST_HEAD(&rx_desc_used_list[device_id]);
 
-	srng = &hal->srng_list[dp->reo_dst_ring[ring_id].ring_id];
+	reo_ring = &dp->reo_dst_ring[ring_id];
+	srng = &hal->srng_list[reo_ring->ring_id];
 
 	spin_lock_bh(&srng->lock);
 
 try_again:
 	ath12k_hal_srng_access_begin(ab, srng);
+	/* The ring is cacheable: one invalidate per head pointer read
+	 * instead of an uncached load per descriptor field.
+	 */
+	ath12k_dp_srng_dst_inval(ab, reo_ring, srng);
 	num_ahead = 0;
 
 	while ((ring_desc = ath12k_hal_srng_dst_get_next_entry(ab, srng))) {
@@ -816,10 +821,10 @@ try_again:
 		enum hal_reo_dest_ring_push_reason push_reason;
 		u32 cookie, slot;
 
-		/* Work ahead: each memory object of an entry is first used
-		 * one entry after it was prefetched. The copy of this entry
-		 * was usually taken earlier, its SW descriptor prefetched two
-		 * entries ago and its skb one entry ago.
+		/* Work ahead: each memory object of an entry is first used at
+		 * least one entry after it was prefetched. The copy of this
+		 * entry was usually taken earlier, its SW descriptor
+		 * prefetched three entries ago and its skb one entry ago.
 		 */
 		cur = cur == ATH12K_WIFI7_RX_AHEAD ? 0 : cur + 1;
 		if (num_ahead)
@@ -844,6 +849,13 @@ try_again:
 			if (ahead_info)
 				prefetchw(ahead_info);
 		}
+
+		/* The ring is cacheable: start the fetch of the line the copy
+		 * above reaches two entries from now.
+		 */
+		ring_desc = ath12k_wifi7_dp_rx_peek_reo_desc(srng, num_ahead + 1);
+		if (ring_desc)
+			prefetch(ring_desc);
 
 		if (num_ahead) {
 			slot = cur == ATH12K_WIFI7_RX_AHEAD ? 0 : cur + 1;

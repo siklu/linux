@@ -109,11 +109,48 @@ void ath12k_dp_srng_cleanup(struct ath12k_base *ab, struct dp_srng *ring)
 	if (!ring->vaddr_unaligned)
 		return;
 
-	dma_free_coherent(ab->dev, ring->size, ring->vaddr_unaligned,
-			  ring->paddr_unaligned);
+	if (ring->cached)
+		dma_free_noncoherent(ab->dev, ring->size, ring->vaddr_unaligned,
+				     ring->paddr_unaligned, DMA_FROM_DEVICE);
+	else
+		dma_free_coherent(ab->dev, ring->size, ring->vaddr_unaligned,
+				  ring->paddr_unaligned);
 
 	ring->vaddr_unaligned = NULL;
 }
+
+/* Invalidate the entries of a cached destination ring between the tail and
+ * the head pointer last read by ath12k_hal_srng_access_begin(), so that
+ * they are read from memory and not from lines cached before the hardware
+ * wrote them. The CPU never writes these rings, so the lines are clean.
+ */
+void ath12k_dp_srng_dst_inval(struct ath12k_base *ab, struct dp_srng *ring,
+			      struct hal_srng *srng)
+{
+	u32 tp = srng->u.dst_ring.tp * sizeof(u32);
+	u32 hp = srng->u.dst_ring.cached_hp * sizeof(u32);
+	u32 off = ring->paddr - ring->paddr_unaligned;
+
+	lockdep_assert_held(&srng->lock);
+
+	if (hp == tp)
+		return;
+
+	if (hp > tp) {
+		dma_sync_single_range_for_cpu(ab->dev, ring->paddr_unaligned,
+					      off + tp, hp - tp,
+					      DMA_FROM_DEVICE);
+		return;
+	}
+
+	dma_sync_single_range_for_cpu(ab->dev, ring->paddr_unaligned, off + tp,
+				      srng->ring_size * sizeof(u32) - tp,
+				      DMA_FROM_DEVICE);
+	if (hp)
+		dma_sync_single_range_for_cpu(ab->dev, ring->paddr_unaligned,
+					      off, hp, DMA_FROM_DEVICE);
+}
+EXPORT_SYMBOL(ath12k_dp_srng_dst_inval);
 
 static int ath12k_dp_srng_find_ring_in_mask(int ring_num, const u8 *grp_mask)
 {
@@ -248,9 +285,15 @@ int ath12k_dp_srng_setup(struct ath12k_base *ab, struct dp_srng *ring,
 		num_entries = max_entries;
 
 	ring->size = (num_entries * entry_sz) + HAL_RING_BASE_ALIGN - 1;
-	ring->vaddr_unaligned = dma_alloc_coherent(ab->dev, ring->size,
-						   &ring->paddr_unaligned,
-						   GFP_KERNEL);
+	if (ring->cached)
+		ring->vaddr_unaligned = dma_alloc_noncoherent(ab->dev, ring->size,
+							      &ring->paddr_unaligned,
+							      DMA_FROM_DEVICE,
+							      GFP_KERNEL);
+	else
+		ring->vaddr_unaligned = dma_alloc_coherent(ab->dev, ring->size,
+							   &ring->paddr_unaligned,
+							   GFP_KERNEL);
 	if (!ring->vaddr_unaligned)
 		return -ENOMEM;
 
@@ -327,6 +370,14 @@ int ath12k_dp_srng_setup(struct ath12k_base *ab, struct dp_srng *ring,
 			    ret, ring_num);
 		return ret;
 	}
+
+	/* ath12k_hal_srng_setup() zeroed the ring through the cache. Write
+	 * those lines back now, so that none is evicted over an entry the
+	 * hardware has written.
+	 */
+	if (ring->cached)
+		dma_sync_single_for_device(ab->dev, ring->paddr_unaligned,
+					   ring->size, DMA_FROM_DEVICE);
 
 	ring->ring_id = ret;
 

@@ -3,13 +3,12 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
-/* QCA nl80211 vendor commands of the QSDK cfg80211tool, with the parameters
- * of long-distance links and link tuning.
+/* QCA nl80211 vendor commands of the QSDK cfg80211tool.
  *
  * Ported from the QSDK NHSS.QSDK.13.1.5-01089 ath12k driver
  * (oss/src/mac80211/wlan-open 3314b0461628, vendor.c): the generic Wi-Fi
- * (per interface) and wiphy (per radio) configuration commands.
- * Differences from the QSDK code:
+ * (per interface) and wiphy (per radio) configuration commands and the
+ * interface reload event they raise. Differences from the QSDK code:
  * - QCA_WLAN_VENDOR_ATTR_IF_OFFLOAD_TYPE returns -EOPNOTSUPP, as there is
  *   no PPE offload in this driver;
  * - the radio index and the parameter data length are checked;
@@ -25,6 +24,7 @@
 #include "core.h"
 #include "debug.h"
 #include "mac.h"
+#include "peer.h"
 #include "vendor.h"
 
 static const struct nla_policy
@@ -39,6 +39,58 @@ ath12k_wifi_config_policy[QCA_WLAN_VENDOR_ATTR_CONFIG_MAX + 1] = {
 	[QCA_WLAN_VENDOR_ATTR_IF_OFFLOAD_TYPE] = {.type = NLA_U8},
 	[QCA_WLAN_VENDOR_ATTR_CONFIG_RADIO_INDEX] = {.type = NLA_U8 },
 };
+
+/* Send a 'reload' NL80211 event to userspace
+ * link_id is 'invalid' for non-mlo wdev.
+ * For mlo wdev, if 'invalid' link_id is passed, userspace will reload all
+ * BSSes of the mlo
+ * If valid link_id is passed for mlo wdev, only that BSS is reset
+ * in userspace.
+ */
+static int ath12k_vendor_event_iface_reload_link(struct wiphy *wiphy,
+						 struct wireless_dev *wdev,
+						 u8 link_id)
+{
+	struct sk_buff *skb;
+
+	skb = cfg80211_vendor_event_alloc(wiphy, wdev,
+					  NLMSG_DEFAULT_SIZE,
+					  QCA_NL80211_VENDOR_SUBCMD_IFACE_RELOAD_INDEX,
+					  GFP_KERNEL);
+	if (!skb)
+		return -ENOMEM;
+
+	if (nla_put_u8(skb, QCA_WLAN_VENDOR_ATTR_IFACE_RELOAD_LINKID, link_id)) {
+		kfree_skb(skb);
+		return -EINVAL;
+	}
+
+	ath12k_dbg(NULL, ATH12K_DBG_CFG,
+		   "send event to userspace link_id %d\n", link_id);
+	cfg80211_vendor_event(skb, GFP_KERNEL);
+
+	return 0;
+}
+
+/* Find the wdevs corresponding to the radio of the wiphy
+ * and send the reload event to userspace
+ */
+static int ath12k_vendor_event_iface_reload(struct wiphy *wiphy,
+					    struct ath12k *ar)
+{
+	struct ath12k_link_vif *arvif;
+	struct wireless_dev *wdev;
+
+	list_for_each_entry(arvif, &ar->arvifs, list) {
+		wdev = ieee80211_vif_to_wdev(arvif->ahvif->vif);
+		if (!wdev) {
+			ath12k_err(ar->ab, "Failed to find wdev\n");
+			return -ENODATA;
+		}
+		ath12k_vendor_event_iface_reload_link(wiphy, wdev, arvif->link_id);
+	}
+	return 0;
+}
 
 /* From QSDK 14.0 ath12k_vendor_set_fixed_rate(), EHT MCS mode: fix the TX
  * rate of the vdev to an EHT MCS, with the maximum NSS of the radio
@@ -97,6 +149,10 @@ static const struct ath12k_vendor_mu_mode_param {
 	{ QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_OFDMA, true, EHT_MODE_UL_OFDMA },
 	{ QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_MUMIMO, false, HE_MODE_UL_MUMIMO },
 	{ QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_MUMIMO, true, EHT_MODE_MUMIMO },
+	/* DL MU-MIMO is sent by the MU beamformer */
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_HE_DL_MUMIMO, false, HE_MODE_MU_TX_BFER },
+	{ QCA_WLAN_VENDOR_VDEV_PARAM_EHT_DL_MUMIMO, true,
+	  EHT_MODE_MU_TX_BFER | EHT_MODE_DL_OFDMA_MUMIMO },
 };
 
 static const struct ath12k_vendor_mu_mode_param *
@@ -276,27 +332,144 @@ static int ath12k_vendor_get_be_wmm(struct ath12k_link_vif *arvif,
 	return 0;
 }
 
-/* A vendor parameter that is one WMI pdev parameter. As in the QSDK 14.0
- * setters, the value is checked and sent as is. The meaning of the values
- * is in the firmware's wmi_unified.h.
+/* Broadcast or restricted TWT on or off. Applied at once if TWT is
+ * enabled, else when it is.
+ */
+static int ath12k_vendor_set_twt(struct ath12k *ar, u32 param, u32 value)
+{
+	bool *cfg = param == QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST ?
+		    &ar->twt_bcast : &ar->twt_rtwt;
+	bool old = *cfg;
+	int ret;
+
+	if (value > 1) {
+		ath12k_err(ar->ab, "TWT value should be 0 or 1\n");
+		return -EINVAL;
+	}
+
+	*cfg = value;
+	ret = ath12k_mac_twt_reconfig(ar);
+	if (ret) {
+		ath12k_err(ar->ab, "Failed to send the TWT configuration to firmware\n");
+		*cfg = old;
+	}
+
+	return ret;
+}
+
+/* A vendor parameter that is one WMI vdev or pdev parameter. As in the
+ * QSDK 14.0 setters, the value is checked and sent as is. The meaning of
+ * the values is in the firmware's wmi_unified.h.
  *
  * The firmware cannot be asked for these parameters, so the getters return
- * the value last sent to it. A parameter never sent has the firmware's
- * default, which the driver does not know; its getter fails with -ENODATA.
+ * the value last sent to it: every write of the WMI parameter is recorded,
+ * also the driver's own (RTS/CTS, protection and BA mode, NSS, EHT LTF,
+ * HE sounding mode, station kickout threshold, ARP access category). A
+ * parameter never sent has the firmware's default, which the driver does
+ * not know; its getter fails with -ENODATA.
  */
 struct ath12k_vendor_wmi_param {
 	u32 param;
 	u32 wmi_param;
-	u32 min;
-	u32 max;
+	s64 min;
+	s64 max;
+	/* the value is signed */
+	bool sign;
+	/* format bits of the WMI value: the UL trigger parameters tell HE (0)
+	 * from EHT (WMI_HOST_VDEV_PARAM_EHT_MODE) in bits 28-31
+	 */
+	u32 fmt_mask;
+	u32 fmt;
 	/* further checks, may change the value */
 	int (*check)(struct ath12k *ar, u32 *value);
 };
+
+#define ATH12K_VENDOR_VDEV_WMI(_param, _wmi, _min, _max, ...)		\
+	{ .param = QCA_WLAN_VENDOR_VDEV_PARAM_ ## _param,		\
+	  .wmi_param = WMI_VDEV_PARAM_ ## _wmi,				\
+	  .min = (_min), .max = (_max), __VA_ARGS__ }
 
 #define ATH12K_VENDOR_PDEV_WMI(_param, _wmi, _min, _max, ...)		\
 	{ .param = QCA_WLAN_VENDOR_RADIO_PARAM_ ## _param,		\
 	  .wmi_param = WMI_PDEV_PARAM_ ## _wmi,				\
 	  .min = (_min), .max = (_max), __VA_ARGS__ }
+
+#define ATH12K_VENDOR_UL_FMT_MASK GENMASK(31, 28)
+
+/* BA mode 4 is a placeholder in the firmware, not a valid mode */
+static int ath12k_vendor_check_ba_mode(struct ath12k *ar, u32 *value)
+{
+	if (*value == 4) {
+		ath12k_err(ar->ab, "BA mode 4 is not valid\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Bits 24-31 bandwidth (0-6), bits 16-23 NSS, bits 0-15 rate mask */
+static int ath12k_vendor_check_bw_nss_rate(struct ath12k *ar, u32 *value)
+{
+	u32 bw = u32_get_bits(*value, GENMASK(31, 24));
+	u32 nss = u32_get_bits(*value, GENMASK(23, 16));
+	u32 ratemask = u32_get_bits(*value, GENMASK(15, 0));
+
+	if (bw > 6 ||
+	    (bw >= 3 && ratemask > 0x3ff) ||
+	    (bw >= 1 && bw <= 2 && ratemask > 0xff) ||
+	    (bw >= 1 && (nss == 0 || nss > 4))) {
+		ath12k_err(ar->ab, "Invalid bandwidth, NSS or rate mask: 0x%x\n",
+			   *value);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* Bits 0-3 RTS/CTS flag (0-2), bits 4-7 profile (0-4). The profile is 0
+ * if and only if the flag is 0.
+ */
+static int ath12k_vendor_check_rtscts(struct ath12k *ar, u32 *value)
+{
+	u32 flag = u32_get_bits(*value, GENMASK(3, 0));
+	u32 profile = u32_get_bits(*value, GENMASK(7, 4));
+
+	if (!flag != !profile || flag > 2 || profile > 4) {
+		ath12k_err(ar->ab, "Invalid RTS/CTS value: 0x%x\n", *value);
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* UL trigger GI: 0 is 0.8 us, 2 is 1.6 us, 3 is 3.2 us. 1 (0.4 us) is not
+ * an HE or EHT GI.
+ */
+static int ath12k_vendor_check_ul_gi(struct ath12k *ar, u32 *value)
+{
+	if (*value == 1) {
+		ath12k_err(ar->ab, "UL GI should be 0, 2 or 3\n");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+/* NSS 0 means the number of TX chains of the radio */
+static int ath12k_vendor_check_nss(struct ath12k *ar, u32 *value)
+{
+	u32 max_nss = hweight32(ar->pdev->cap.tx_chain_mask);
+
+	if (!*value)
+		*value = max_nss;
+
+	if (!max_nss || *value > max_nss) {
+		ath12k_err(ar->ab, "NSS should be 1 to %u\n", max_nss);
+		return -EINVAL;
+	}
+
+	return 0;
+}
 
 #define ATH12K_VENDOR_ACK_TIMEOUT_MIN 0x40
 #define ATH12K_VENDOR_ACK_TIMEOUT_MAX 0xff
@@ -324,15 +497,129 @@ static int ath12k_vendor_check_ack_timeout(struct ath12k *ar, u32 *value)
 	return 0;
 }
 
+static const struct ath12k_vendor_wmi_param ath12k_vendor_vdev_wmi_params[] = {
+	ATH12K_VENDOR_VDEV_WMI(DYN_BW_RTS, DISABLE_DYN_BW_RTS, 0, U32_MAX),
+	/* bits 0-2: rate drop down of management, SU data and MU data */
+	ATH12K_VENDOR_VDEV_WMI(RATE_DROPDOWN, RATE_DROPDOWN_BMAP, 0, 7),
+	ATH12K_VENDOR_VDEV_WMI(RC_NUM_RETRIES, RC_NUM_RETRIES, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(HE_SOUNDING_MODE, SET_HE_SOUNDING_MODE,
+			       0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(GTX_ENABLE, GTX_ENABLE, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(HWCTS2SELF_OFDMA, HWCTS2SELF_OFDMA, 0, 1),
+	/* a BA mode: 0 default, 1 manual, 2, 3, 5, 6 BA window 64, 256,
+	 * 512, 1024
+	 */
+	ATH12K_VENDOR_VDEV_WMI(BA_BUFSIZE, BA_MODE, 0, 6,
+			       .check = ath12k_vendor_check_ba_mode),
+	ATH12K_VENDOR_VDEV_WMI(PROTECTION_MODE, PROTECTION_MODE, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(BW_NSS_RATE, BW_NSS_RATEMASK, 0, U32_MAX,
+			       .check = ath12k_vendor_check_bw_nss_rate),
+	/* UL trigger: LDPC, LTF, max NSS, PPDU bandwidth, GI, STBC */
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_LDPC, UL_LDPC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_LTF, UL_EHT_LTF, 0, 3),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_NSS, UL_NSS, 0, 0xfffffff,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_PPDU_BW, UL_PPDU_BW, 0, 4,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_SHORTGI, UL_GI, 0, 3,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE,
+			       .check = ath12k_vendor_check_ul_gi),
+	ATH12K_VENDOR_VDEV_WMI(EHT_UL_STBC, UL_STBC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .fmt = WMI_HOST_VDEV_PARAM_EHT_MODE),
+	ATH12K_VENDOR_VDEV_WMI(ENABLERTSCTS, ENABLE_RTSCTS, 0, 0xff,
+			       .check = ath12k_vendor_check_rtscts),
+	ATH12K_VENDOR_VDEV_WMI(HE_DCM, HE_DCM, 0, 1),
+	ATH12K_VENDOR_VDEV_WMI(HE_EXTRANGE, HE_RANGE_EXT, 0, 1),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_LDPC, UL_LDPC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_NSS, UL_NSS, 0, 0xfffffff,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_PPDU_BW, UL_PPDU_BW, 0, 3,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_SHORTGI, UL_GI, 0, 3,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK,
+			       .check = ath12k_vendor_check_ul_gi),
+	ATH12K_VENDOR_VDEV_WMI(HE_UL_STBC, UL_STBC, 0, 1,
+			       .fmt_mask = ATH12K_VENDOR_UL_FMT_MASK),
+	/* rate code of RTS and CTS */
+	ATH12K_VENDOR_VDEV_WMI(RTSCTS_RATE, RTSCTS_RATE, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(DIS_LPI_ANT_OPTIMIZE,
+			       DISABLE_LPI_ANT_OPTIMIZATION, 0, U32_MAX),
+	ATH12K_VENDOR_VDEV_WMI(NSS, NSS, 0, U32_MAX,
+			       .check = ath12k_vendor_check_nss),
+	/* enum wmi_channel_width */
+	ATH12K_VENDOR_VDEV_WMI(CHWIDTH, CHWIDTH, 0, 0xf),
+	ATH12K_VENDOR_VDEV_WMI(EHT_LTF, EHT_LTF, 0, 3),
+};
+
 static const struct ath12k_vendor_wmi_param ath12k_vendor_pdev_wmi_params[] = {
+	ATH12K_VENDOR_PDEV_WMI(MGMT_RETRY_LIMIT, MGMT_RETRY_LIMIT, 1, 14),
+	ATH12K_VENDOR_PDEV_WMI(RTS_CTS_RATE, RTS_FIXED_RATE, 0, 4),
+	/* retry and station kickout thresholds, 0 disables */
+	ATH12K_VENDOR_PDEV_WMI(NON_AGG_SW_RETRY_TH, NON_AGG_SW_RETRY_TH,
+			       0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(AGG_SW_RETRY_TH, AGG_SW_RETRY_TH, 0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(STA_KICKOUT_TH, STA_KICKOUT_TH, 0, U32_MAX),
+	/* access category of ARP and DHCP: 0 BE, 1 BK, 2 VI, 3 VO */
+	ATH12K_VENDOR_PDEV_WMI(ARPDHCP_AC_OVERRIDE, ARP_AC_OVERRIDE, 0, 3),
+	ATH12K_VENDOR_PDEV_WMI(ANI_ENABLE, ANI_ENABLE, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(ANI_POLL_PERIOD, ANI_POLL_PERIOD, 1, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(ANI_LISTEN_PERIOD, ANI_LISTEN_PERIOD,
+			       1, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(ANI_OFDM_LEVEL, ANI_OFDM_LEVEL, -128, 127,
+			       .sign = true),
+	/* dBm. QSDK clamps the value to this range. */
+	ATH12K_VENDOR_PDEV_WMI(CCA_THRESHOLD, CCA_THRESHOLD, -94, -11,
+			       .sign = true),
+	/* dBm */
+	ATH12K_VENDOR_PDEV_WMI(SENS_LEVEL, SENSITIVITY_LEVEL, 0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(DYN_GROUPING, MU_GROUP_POLICY, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(BURST_DUR, BURST_DUR, 0, 8192),
+	ATH12K_VENDOR_PDEV_WMI(BURST_ENABLE, BURST_ENABLE, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(DISABLE_LPI_ANT, DISABLE_LPI_ANT_OPTIMIZATION,
+			       0, U32_MAX),
 	ATH12K_VENDOR_PDEV_WMI(UL_OFDMA_RTD, UL_OFDMA_RTD, 0, 600),
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_SMALL_MRU, ENABLE_SMALL_MRU, 0, 1),
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_LARGE_MRU, ENABLE_LARGE_MRU, 0, 1),
 	/* us */
+	ATH12K_VENDOR_PDEV_WMI(SET_PPDU_DURATION_CMDID, SET_PPDU_DURATION_CMDID,
+			       0, U32_MAX),
+	/* ms */
+	ATH12K_VENDOR_PDEV_WMI(TXBF_SOUND_PERIOD_CMDID, TXBF_SOUND_PERIOD_CMDID,
+			       10, 10000),
+	/* 0 data-CTS, 1 data-data, 2 data-data or CTS */
+	ATH12K_VENDOR_PDEV_WMI(SET_BURST_MODE_CMDID, SET_BURST_MODE_CMDID,
+			       0, 2),
+	/* bitmaps of the TIDs */
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_AMSDU, ENABLE_PER_TID_AMSDU, 0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(ENABLE_AMPDU, ENABLE_PER_TID_AMPDU, 0, U32_MAX),
 	ATH12K_VENDOR_PDEV_WMI(CTS_TIMEOUT, CTS_TIMEOUT, 1, 0xff),
 	ATH12K_VENDOR_PDEV_WMI(SLOT_TIME, SLOT_TIME, 1, 90),
 	ATH12K_VENDOR_PDEV_WMI(ACK_TIMEOUT, ACK_TIMEOUT, 0, U32_MAX,
 			       .check = ath12k_vendor_check_ack_timeout),
+	/* 1: equal RU allocation for DL and UL OFDMA, 0: dynamic */
+	ATH12K_VENDOR_PDEV_WMI(EQUAL_RU_ALLOCATION_ENABLE,
+			       EQUAL_RU_ALLOCATION_ENABLE, 0, 1),
+	/* DL, us */
+	ATH12K_VENDOR_PDEV_WMI(SET_MU_PPDU_DURATION, SET_MU_PPDU_DURATION,
+			       0, U32_MAX),
+	/* bitmap of the punctured 20 MHz subchannels */
+	ATH12K_VENDOR_PDEV_WMI(SET_PREAM_PUNCT_BW, SET_PREAM_PUNCT_BW,
+			       0, U32_MAX),
+	ATH12K_VENDOR_PDEV_WMI(LOW_LATENCY_SCHED_MODE, LOW_LATENCY_SCHED_MODE,
+			       0, U32_MAX),
+	/* ms */
+	ATH12K_VENDOR_PDEV_WMI(MSDU_TTL, SET_MSDU_TTL_CMDID, 0, U32_MAX),
 };
 
+static_assert(ARRAY_SIZE(ath12k_vendor_vdev_wmi_params) <=
+	      ATH12K_VENDOR_WMI_PARAMS_MAX);
 static_assert(ARRAY_SIZE(ath12k_vendor_pdev_wmi_params) <=
 	      ATH12K_VENDOR_WMI_PARAMS_MAX);
 
@@ -348,22 +635,43 @@ static int ath12k_vendor_find_wmi_param(const struct ath12k_vendor_wmi_param *wp
 	return -ENOENT;
 }
 
-/* Record a WMI pdev parameter sent to the firmware, by anyone */
-void ath12k_vendor_pdev_param_sent(struct ath12k *ar, u32 wmi_param,
-				   u32 value)
+/* Record a WMI parameter sent to the firmware, by anyone */
+static void ath12k_vendor_wmi_param_sent(const struct ath12k_vendor_wmi_param *wps,
+					 int n, struct ath12k_vendor_wmi_vals *vals,
+					 u32 wmi_param, u32 value)
 {
-	struct ath12k_vendor_wmi_vals *vals = &ar->vendor_pdev_wmi;
 	int i;
 
-	for (i = 0; i < ARRAY_SIZE(ath12k_vendor_pdev_wmi_params); i++) {
-		if (ath12k_vendor_pdev_wmi_params[i].wmi_param != wmi_param)
+	for (i = 0; i < n; i++) {
+		if (wps[i].wmi_param != wmi_param ||
+		    (value & wps[i].fmt_mask) != wps[i].fmt)
 			continue;
 
-		WRITE_ONCE(vals->val[i], value);
+		WRITE_ONCE(vals->val[i], value & ~wps[i].fmt_mask);
 		/* the value before the bit, for ath12k_vendor_get_wmi_val() */
 		smp_mb__before_atomic();
 		set_bit(i, vals->sent);
 	}
+}
+
+void ath12k_vendor_vdev_param_sent(struct ath12k *ar, u32 vdev_id,
+				   u32 wmi_param, u32 value)
+{
+	if (vdev_id >= ATH12K_VENDOR_MAX_VDEVS)
+		return;
+
+	ath12k_vendor_wmi_param_sent(ath12k_vendor_vdev_wmi_params,
+				     ARRAY_SIZE(ath12k_vendor_vdev_wmi_params),
+				     &ar->vendor_vdev_wmi[vdev_id],
+				     wmi_param, value);
+}
+
+void ath12k_vendor_pdev_param_sent(struct ath12k *ar, u32 wmi_param,
+				   u32 value)
+{
+	ath12k_vendor_wmi_param_sent(ath12k_vendor_pdev_wmi_params,
+				     ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+				     &ar->vendor_pdev_wmi, wmi_param, value);
 }
 
 static int ath12k_vendor_get_wmi_val(struct ath12k_vendor_wmi_vals *vals,
@@ -372,7 +680,7 @@ static int ath12k_vendor_get_wmi_val(struct ath12k_vendor_wmi_vals *vals,
 	if (!test_bit(idx, vals->sent))
 		return -ENODATA;
 
-	/* the bit before the value, see ath12k_vendor_pdev_param_sent() */
+	/* the bit before the value, see ath12k_vendor_wmi_param_sent() */
 	smp_rmb();
 	*value = READ_ONCE(vals->val[idx]);
 
@@ -383,20 +691,63 @@ static int ath12k_vendor_check_wmi_param(struct ath12k *ar,
 					 const struct ath12k_vendor_wmi_param *wp,
 					 u32 *value)
 {
-	if (*value < wp->min || *value > wp->max) {
-		ath12k_err(ar->ab, "Value %u should be %u to %u\n",
-			   *value, wp->min, wp->max);
+	s64 v = wp->sign ? (s64)(s32)*value : (s64)*value;
+
+	if (v < wp->min || v > wp->max) {
+		ath12k_err(ar->ab, "Value %lld should be %lld to %lld\n",
+			   v, wp->min, wp->max);
 		return -EINVAL;
 	}
 
 	return wp->check ? wp->check(ar, value) : 0;
 }
 
+static int ath12k_vendor_set_vdev_wmi_param(struct ath12k_link_vif *arvif,
+					    int idx, u32 value)
+{
+	const struct ath12k_vendor_wmi_param *wp =
+		&ath12k_vendor_vdev_wmi_params[idx];
+	struct ath12k *ar = arvif->ar;
+	int ret;
+
+	if (!arvif->is_created) {
+		ath12k_err(ar->ab, "The interface has no firmware vdev yet\n");
+		return -ENOTCONN;
+	}
+
+	ret = ath12k_vendor_check_wmi_param(ar, wp, &value);
+	if (ret)
+		return ret;
+
+	ret = ath12k_wmi_vdev_set_param_cmd(ar, arvif->vdev_id, wp->wmi_param,
+					    value | wp->fmt);
+	if (ret)
+		ath12k_err(ar->ab, "Failed to send vdev param %u to firmware\n",
+			   wp->wmi_param);
+
+	return ret;
+}
+
+static int ath12k_vendor_get_vdev_wmi_param(struct ath12k_link_vif *arvif,
+					    int idx, u32 *value)
+{
+	if (!arvif->is_created || !arvif->ar ||
+	    arvif->vdev_id >= ATH12K_VENDOR_MAX_VDEVS)
+		return -ENODATA;
+
+	return ath12k_vendor_get_wmi_val(&arvif->ar->vendor_vdev_wmi[arvif->vdev_id],
+					 idx, value);
+}
+
+#define ATH12K_VENDOR_DEFAULT_BURST_DUR 8160
+
 static int ath12k_vendor_set_pdev_wmi_param(struct ath12k *ar, int idx,
 					    u32 value)
 {
 	const struct ath12k_vendor_wmi_param *wp =
 		&ath12k_vendor_pdev_wmi_params[idx];
+	int dur_idx;
+	u32 dur;
 	int ret;
 
 	ret = ath12k_vendor_check_wmi_param(ar, wp, &value);
@@ -405,21 +756,47 @@ static int ath12k_vendor_set_pdev_wmi_param(struct ath12k *ar, int idx,
 
 	ret = ath12k_wmi_pdev_set_param(ar, wp->wmi_param, value,
 					ar->pdev->pdev_id);
-	if (ret)
+	if (ret) {
 		ath12k_err(ar->ab, "Failed to send pdev param %u to firmware\n",
 			   wp->wmi_param);
+		return ret;
+	}
+
+	/* As QSDK: bursting gets a duration if none was set */
+	if (wp->param == QCA_WLAN_VENDOR_RADIO_PARAM_BURST_ENABLE) {
+		dur_idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
+						       ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+						       QCA_WLAN_VENDOR_RADIO_PARAM_BURST_DUR);
+		if (ath12k_vendor_get_wmi_val(&ar->vendor_pdev_wmi, dur_idx, &dur) ||
+		    !dur)
+			ret = ath12k_vendor_set_pdev_wmi_param(ar, dur_idx,
+							       ATH12K_VENDOR_DEFAULT_BURST_DUR);
+	}
 
 	return ret;
 }
 
-/* Set link-vif level parameters */
+/* Set link-vif level parameters
+ * set 'reload' to true to send reload event to userspace
+ */
 static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
-					  u32 param, u32 value)
+					  u32 param, u32 value, bool *reload)
 {
 	struct ath12k *ar = arvif->ar;
 	int ret = -1;
+	int idx;
 
 	switch (param) {
+	case QCA_WLAN_VENDOR_VDEV_PARAM_TEST_RELOAD:
+		*reload = true;
+		ret = 0;
+		break;
+	case PARAM_RADIO_TXCHAINSOFT:
+		ret = ath12k_mac_set_tx_antenna(ar, value);
+		break;
+	case ACFG_PARAM_RADIO_RXCHAINMASK:
+		ret = ath12k_mac_set_rx_antenna(ar, value);
+		break;
 	case QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS:
 		ret = ath12k_vendor_set_fixed_eht_mcs(arvif, value);
 		break;
@@ -427,6 +804,8 @@ static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
 	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_OFDMA:
 	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_MUMIMO:
 	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_DL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_DL_MUMIMO:
 		ret = ath12k_vendor_set_mu_mode(arvif,
 						ath12k_vendor_find_mu_mode_param(param),
 						value);
@@ -438,6 +817,13 @@ static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
 		ret = ath12k_vendor_set_be_wmm(arvif, param, value);
 		break;
 	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_vdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_vdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_set_vdev_wmi_param(arvif, idx, value);
+			break;
+		}
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
 		break;
@@ -446,21 +832,42 @@ static int ath12k_vendor_set_arvif_params(struct ath12k_link_vif *arvif,
 	return ret;
 }
 
-/* Set radio level parameters */
+/* Set radio level parameters
+ * set 'reload' to true to send reload event to userspace
+ */
 static int ath12k_vendor_set_radio_params(struct ath12k *ar,
-					  u32 param, u32 value)
+					  u32 param, u32 value, bool *reload)
 {
 	int ret = -1;
 	int idx;
 
-	idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
-					   ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
-					   param);
-	if (idx >= 0)
-		ret = ath12k_vendor_set_pdev_wmi_param(ar, idx, value);
-	else
+	switch (param) {
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TEST_RELOAD:
+		*reload = true;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST:
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_RTWT:
+		ret = ath12k_vendor_set_twt(ar, param, value);
+		break;
+	case PARAM_RADIO_TXCHAINSOFT:
+		ret = ath12k_mac_set_tx_antenna(ar, value);
+		break;
+	case ACFG_PARAM_RADIO_RXCHAINMASK:
+		ret = ath12k_mac_set_rx_antenna(ar, value);
+		break;
+	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_set_pdev_wmi_param(ar, idx, value);
+			break;
+		}
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
+		break;
+	}
 
 	return ret;
 }
@@ -477,7 +884,9 @@ static int ath12k_vendor_set_wifi_params(struct wiphy *wiphy,
 	struct ath12k_link_vif *arvif = NULL;
 	struct ath12k_hw *ah = NULL;
 	u32 param = params->value;
+	bool reload = false;
 	u32 value;
+	int ret = -1;
 
 	lockdep_assert_wiphy(wiphy);
 
@@ -511,7 +920,12 @@ static int ath12k_vendor_set_wifi_params(struct wiphy *wiphy,
 		   vif, param, value,
 		   params->ifindex, params->link_id);
 
-	return ath12k_vendor_set_arvif_params(arvif, param, value);
+	ret = ath12k_vendor_set_arvif_params(arvif, param, value, &reload);
+
+	if (!ret && reload)
+		ath12k_vendor_event_iface_reload_link(wiphy, wdev, params->link_id);
+
+	return ret;
 }
 
 /* Find the 'ar' radio instance using the radio index of the wiphy */
@@ -535,6 +949,8 @@ static int ath12k_vendor_set_wiphy_params(struct wiphy *wiphy,
 	struct ath12k *ar = NULL;
 	u32 param = params->value;
 	u32 value;
+	int ret = -1;
+	bool reload = false;
 
 	lockdep_assert_wiphy(wiphy);
 
@@ -552,7 +968,12 @@ static int ath12k_vendor_set_wiphy_params(struct wiphy *wiphy,
 		   ar, param, value,
 		   params->ifindex, params->radio_idx);
 
-	return ath12k_vendor_set_radio_params(ar, param, value);
+	ret = ath12k_vendor_set_radio_params(ar, param, value, &reload);
+
+	if (!ret && reload)
+		ath12k_vendor_event_iface_reload(wiphy, ar);
+
+	return ret;
 }
 
 /* Get link-vif level parameters */
@@ -560,8 +981,21 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 					  u32 param, u32 *value)
 {
 	int ret = -1;
+	int idx;
 
 	switch (param) {
+	case PARAM_RADIO_TXCHAINSOFT:
+		*value = arvif->ar->cfg_tx_chainmask;
+		ret = 0;
+		break;
+	case ACFG_PARAM_RADIO_RXCHAINMASK:
+		*value = arvif->ar->cfg_rx_chainmask;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_VDEV_PARAM_TEST:
+		*value = 0;
+		ret = 0;
+		break;
 	case QCA_WLAN_VENDOR_VDEV_PARAM_FIXED_EHT_MCS:
 		if (!arvif->fixed_eht_mcs_set) {
 			ret = -ENODATA;
@@ -574,6 +1008,8 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_OFDMA:
 	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_UL_MUMIMO:
 	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_UL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_HE_DL_MUMIMO:
+	case QCA_WLAN_VENDOR_VDEV_PARAM_EHT_DL_MUMIMO:
 		ret = ath12k_vendor_get_mu_mode(arvif,
 						ath12k_vendor_find_mu_mode_param(param),
 						value);
@@ -585,6 +1021,13 @@ static int ath12k_vendor_get_arvif_params(struct ath12k_link_vif *arvif,
 		ret = ath12k_vendor_get_be_wmm(arvif, param, value);
 		break;
 	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_vdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_vdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_get_vdev_wmi_param(arvif, idx, value);
+			break;
+		}
 		ath12k_dbg(NULL, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
 		break;
@@ -600,14 +1043,40 @@ static int ath12k_vendor_get_radio_params(struct ath12k *ar,
 	int ret = -1;
 	int idx;
 
-	idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
-					   ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
-					   param);
-	if (idx >= 0)
-		ret = ath12k_vendor_get_wmi_val(&ar->vendor_pdev_wmi, idx, value);
-	else
+	switch (param) {
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TEST:
+		*value = 0;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_BCAST:
+		*value = ar->twt_bcast;
+		ret = 0;
+		break;
+	case QCA_WLAN_VENDOR_RADIO_PARAM_TWT_RTWT:
+		*value = ar->twt_rtwt;
+		ret = 0;
+		break;
+	case PARAM_RADIO_TXCHAINSOFT:
+		*value = ar->cfg_tx_chainmask;
+		ret = 0;
+		break;
+	case ACFG_PARAM_RADIO_RXCHAINMASK:
+		*value = ar->cfg_rx_chainmask;
+		ret = 0;
+		break;
+	default:
+		idx = ath12k_vendor_find_wmi_param(ath12k_vendor_pdev_wmi_params,
+						   ARRAY_SIZE(ath12k_vendor_pdev_wmi_params),
+						   param);
+		if (idx >= 0) {
+			ret = ath12k_vendor_get_wmi_val(&ar->vendor_pdev_wmi, idx,
+							value);
+			break;
+		}
 		ath12k_dbg(ar->ab, ATH12K_DBG_CFG,
 			   "Un-supported param: %d\n", param);
+		break;
+	}
 
 	return ret;
 }
@@ -679,6 +1148,124 @@ static int ath12k_vendor_get_wiphy_params(struct wiphy *wiphy,
 	ret = ath12k_vendor_get_radio_params(ar, param, value);
 
 	return ret;
+}
+
+/* The link-vif of the wdev with the link id, the default link if the
+ * link id is invalid
+ */
+static struct ath12k_link_vif *
+ath12k_vendor_find_arvif(struct wiphy *wiphy, struct wireless_dev *wdev,
+			 u8 link_id)
+{
+	struct ieee80211_vif *vif = wdev_to_ieee80211_vif(wdev);
+	struct ath12k_link_vif *arvif;
+	struct ath12k_vif *ahvif;
+
+	if (!vif)
+		return NULL;
+
+	ahvif = ath12k_vif_to_ahvif(vif);
+	if (link_id == INVALID_LINK_ID)
+		arvif = &ahvif->deflink;
+	else if (link_id < ATH12K_NUM_MAX_LINKS)
+		arvif = wiphy_dereference(wiphy, ahvif->link[link_id]);
+	else
+		arvif = NULL;
+
+	if (!arvif || !arvif->ar)
+		return NULL;
+
+	return arvif;
+}
+
+/* A station of the link-vif. It stays valid while the wiphy lock is held:
+ * stations are removed under it.
+ */
+static struct ath12k_link_sta *
+ath12k_vendor_find_arsta(struct ath12k_link_vif *arvif,
+			 struct ath12k_wifi_generic_params *params)
+{
+	struct ath12k_base *ab = arvif->ar->ab;
+	struct ath12k_link_sta *arsta;
+
+	if (!params->data || params->data_len != ETH_ALEN)
+		return NULL;
+
+	spin_lock_bh(&ab->base_lock);
+	arsta = ath12k_link_sta_find_by_addr(ab, params->data);
+	spin_unlock_bh(&ab->base_lock);
+
+	if (!arsta || arsta->arvif != arvif)
+		return NULL;
+
+	return arsta;
+}
+
+/* QSDK 14.0 set_sched_ofdma_enable: stop (0) or allow (1) OFDMA for one
+ * station. QSDK sends peer param 26, which the firmware's wmi_unified.h
+ * names WMI_PEER_PARAM_MU_ENABLE; this sends WMI_PEER_PARAM_OFDMA_ENABLE.
+ */
+static int ath12k_vendor_set_peer_ofdma(struct wiphy *wiphy,
+					struct wireless_dev *wdev,
+					struct ath12k_wifi_generic_params *params)
+{
+	struct ath12k_link_vif *arvif;
+	struct ath12k_link_sta *arsta;
+	int ret;
+
+	lockdep_assert_wiphy(wiphy);
+
+	arvif = ath12k_vendor_find_arvif(wiphy, wdev, params->link_id);
+	if (!arvif)
+		return -EINVAL;
+
+	if (params->value > 1) {
+		ath12k_err(arvif->ar->ab, "OFDMA enable value should be 0 or 1\n");
+		return -EINVAL;
+	}
+
+	arsta = ath12k_vendor_find_arsta(arvif, params);
+	if (!arsta) {
+		ath12k_err(arvif->ar->ab, "No such station on the interface\n");
+		return -ENOENT;
+	}
+
+	ret = ath12k_wmi_set_peer_param(arvif->ar, arsta->addr, arvif->vdev_id,
+					WMI_PEER_PARAM_OFDMA_ENABLE,
+					params->value);
+	if (ret) {
+		ath12k_err(arvif->ar->ab, "Failed to send WMI_PEER_PARAM_OFDMA_ENABLE to firmware\n");
+		return ret;
+	}
+
+	arsta->ofdma_enable_set = true;
+	arsta->ofdma_enable = params->value;
+
+	return 0;
+}
+
+/* The value last set for the station, -1 if none since it connected */
+static int ath12k_vendor_get_peer_ofdma(struct wiphy *wiphy,
+					struct wireless_dev *wdev,
+					struct ath12k_wifi_generic_params *params,
+					u32 *value)
+{
+	struct ath12k_link_vif *arvif;
+	struct ath12k_link_sta *arsta;
+
+	lockdep_assert_wiphy(wiphy);
+
+	arvif = ath12k_vendor_find_arvif(wiphy, wdev, params->link_id);
+	if (!arvif)
+		return -EINVAL;
+
+	arsta = ath12k_vendor_find_arsta(arvif, params);
+	if (!arsta)
+		return -ENOENT;
+
+	*value = arsta->ofdma_enable_set ? arsta->ofdma_enable : (u32)-1;
+
+	return 0;
 }
 
 /* Extract attributes from the NL message */
@@ -761,6 +1348,12 @@ static int ath12k_vendor_wifi_config_handler(struct wiphy *wiphy,
 					  "Failed to set wifi params\n");
 				return -EINVAL;
 			}
+			break;
+		case QCA_WLAN_VENDOR_WIFI_PARAM_SCHED_OFDMA_ENABLE:
+			ret = ath12k_vendor_set_peer_ofdma(wiphy, wdev,
+							   &wifi_params);
+			if (ret)
+				return ret;
 			break;
 		default:
 			ath12k_dbg(NULL, ATH12K_DBG_CFG,
@@ -862,6 +1455,12 @@ static int ath12k_vendor_get_wifi_config_handler(struct wiphy *wiphy,
 					  "Failed to get wifi params\n");
 				return -EINVAL;
 			}
+			break;
+		case QCA_WLAN_VENDOR_WIFI_PARAM_SCHED_OFDMA_ENABLE:
+			ret = ath12k_vendor_get_peer_ofdma(wiphy, wdev,
+							   &wifi_params, &value);
+			if (ret)
+				return ret;
 			break;
 		default:
 			ath12k_dbg(NULL, ATH12K_DBG_CFG,
@@ -1005,9 +1604,18 @@ static const struct wiphy_vendor_command ath12k_vendor_commands[] = {
 	},
 };
 
+static const struct nl80211_vendor_cmd_info ath12k_vendor_events[] = {
+	[QCA_NL80211_VENDOR_SUBCMD_IFACE_RELOAD_INDEX] = {
+		.vendor_id = QCA_NL80211_VENDOR_ID,
+		.subcmd = QCA_NL80211_VENDOR_SUBCMD_IFACE_RELOAD
+	},
+};
+
 int ath12k_vendor_register(struct ath12k_hw *ah)
 {
 	ah->hw->wiphy->vendor_commands = ath12k_vendor_commands;
 	ah->hw->wiphy->n_vendor_commands = ARRAY_SIZE(ath12k_vendor_commands);
+	ah->hw->wiphy->vendor_events = ath12k_vendor_events;
+	ah->hw->wiphy->n_vendor_events = ARRAY_SIZE(ath12k_vendor_events);
 	return 0;
 }

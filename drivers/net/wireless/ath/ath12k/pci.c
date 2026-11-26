@@ -5,8 +5,10 @@
  */
 
 #include <linux/module.h>
+#include <linux/interrupt.h>
 #include <linux/msi.h>
 #include <linux/pci.h>
+#include <linux/sched.h>
 #include <linux/time.h>
 #include <linux/vmalloc.h>
 
@@ -531,12 +533,49 @@ static irqreturn_t ath12k_pci_ext_interrupt_handler(int irq, void *arg)
 	return IRQ_HANDLED;
 }
 
+static int ath12k_pci_napi_cpu[ATH12K_EXT_IRQ_GRP_NUM_MAX] = {
+	[0 ... ATH12K_EXT_IRQ_GRP_NUM_MAX - 1] = -1
+};
+
+static int ath12k_pci_napi_cpu_num;
+module_param_array_named(napi_cpu, ath12k_pci_napi_cpu, int,
+			 &ath12k_pci_napi_cpu_num, 0444);
+MODULE_PARM_DESC(napi_cpu,
+		 "CPU of each DP group's threaded NAPI kthread, by group (-1: not pinned)");
+
+static void ath12k_pci_ext_grp_napi_pin(struct ath12k_base *ab,
+					struct ath12k_ext_irq_grp *irq_grp)
+{
+	int cpu = ath12k_pci_napi_cpu[irq_grp->grp_id];
+	struct task_struct *thread = irq_grp->napi.thread;
+	int ret;
+
+	if (cpu < 0 || !thread)
+		return;
+
+	if (cpu >= nr_cpu_ids || !cpu_online(cpu)) {
+		ath12k_warn(ab, "napi_cpu %d of DP group %d is not an online CPU\n",
+			    cpu, irq_grp->grp_id);
+		return;
+	}
+
+	ret = set_cpus_allowed_ptr(thread, cpumask_of(cpu));
+	if (ret)
+		ath12k_warn(ab, "failed to pin DP group %d NAPI to CPU %d: %d\n",
+			    irq_grp->grp_id, cpu, ret);
+	else
+		ath12k_dbg(ab, ATH12K_DBG_PCI, "DP group %d NAPI on CPU %d\n",
+			   irq_grp->grp_id, cpu);
+}
+
 static int ath12k_pci_ext_irq_config(struct ath12k_base *ab)
 {
 	struct ath12k_pci *ab_pci = ath12k_pci_priv(ab);
 	int i, j, n, ret, num_vectors = 0;
 	u32 user_base_data = 0, base_vector = 0, base_idx;
 	struct ath12k_ext_irq_grp *irq_grp;
+	bool threaded_napi = false;
+	int irq;
 
 	base_idx = ATH12K_PCI_IRQ_CE0_OFFSET + CE_COUNT_MAX;
 	ret = ath12k_pci_get_user_msi_assignment(ab, "DP",
@@ -545,6 +584,10 @@ static int ath12k_pci_ext_irq_config(struct ath12k_base *ab)
 						 &base_vector);
 	if (ret < 0)
 		return ret;
+
+	irq = ath12k_pci_get_msi_irq(ab->dev, base_vector);
+	if (irq >= 0)
+		threaded_napi = !irq_can_set_affinity(irq);
 
 	for (i = 0; i < ATH12K_EXT_IRQ_GRP_NUM_MAX; i++) {
 		irq_grp = &ab->ext_irq_grp[i];
@@ -560,6 +603,10 @@ static int ath12k_pci_ext_irq_config(struct ath12k_base *ab)
 
 		netif_napi_add(irq_grp->napi_ndev, &irq_grp->napi,
 			       ath12k_pci_ext_grp_napi_poll);
+		if (threaded_napi) {
+			netif_threaded_enable(irq_grp->napi_ndev);
+			ath12k_pci_ext_grp_napi_pin(ab, irq_grp);
+		}
 
 		if (ab->hw_params->ring_mask->tx[i] ||
 		    ab->hw_params->ring_mask->rx[i] ||
@@ -578,7 +625,8 @@ static int ath12k_pci_ext_irq_config(struct ath12k_base *ab)
 		for (j = 0; j < irq_grp->num_irq; j++) {
 			int irq_idx = irq_grp->irqs[j];
 			int vector = (i % num_vectors) + base_vector;
-			int irq = ath12k_pci_get_msi_irq(ab->dev, vector);
+
+			irq = ath12k_pci_get_msi_irq(ab->dev, vector);
 
 			ab->irq_num[irq_idx] = irq;
 

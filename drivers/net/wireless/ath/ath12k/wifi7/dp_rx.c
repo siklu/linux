@@ -4,6 +4,8 @@
  * Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
  */
 
+#include <linux/prefetch.h>
+
 #include "dp_rx.h"
 #include "../dp_tx.h"
 #include "../peer.h"
@@ -689,6 +691,85 @@ ath12k_wifi7_dp_rx_process_received_packets(struct ath12k_dp *dp,
 	rcu_read_unlock();
 }
 
+union ath12k_wifi7_reo_dest_copy {
+	struct hal_reo_dest_ring desc;
+	u64 word[4];
+};
+
+/* Fetch the whole 32-byte REO entry with as few loads as possible and
+ * parse the copy, instead of loading each field (some of them twice) from
+ * the ring. On arm64 that is two 16-byte load pairs; the ring base and the
+ * entries are 8-byte aligned. This matters most when the ring is uncached,
+ * where every load stalls and the stalls of back-to-back loads add up.
+ */
+static inline void
+ath12k_wifi7_dp_rx_copy_reo_desc(union ath12k_wifi7_reo_dest_copy *copy,
+				 const struct hal_reo_dest_ring *ring_desc)
+{
+	const u64 *src = (const u64 *)ring_desc;
+
+	BUILD_BUG_ON(sizeof(*ring_desc) != sizeof(copy->word));
+
+#ifdef CONFIG_ARM64
+	asm volatile("ldp %0, %1, [%4]\n\t"
+		     "ldp %2, %3, [%4, #16]"
+		     : "=&r" (copy->word[0]), "=&r" (copy->word[1]),
+		       "=&r" (copy->word[2]), "=&r" (copy->word[3])
+		     : "r" (src), "m" (*(const u64 (*)[4])src));
+#else
+	copy->word[0] = READ_ONCE(src[0]);
+	copy->word[1] = READ_ONCE(src[1]);
+	copy->word[2] = READ_ONCE(src[2]);
+	copy->word[3] = READ_ONCE(src[3]);
+#endif
+}
+
+/* How many REO entries past the current one the Rx loop reads ahead. */
+#define ATH12K_WIFI7_RX_AHEAD	3
+
+/* Return the entry @ahead entries past the one the last
+ * ath12k_hal_srng_dst_get_next_entry() returned, or NULL if the hardware
+ * has not written it yet as far as the cached head pointer tells. The
+ * entry is not consumed.
+ */
+static inline struct hal_reo_dest_ring *
+ath12k_wifi7_dp_rx_peek_reo_desc(struct hal_srng *srng, u32 ahead)
+{
+	u32 tp = srng->u.dst_ring.tp;
+	u32 hp = srng->u.dst_ring.cached_hp;
+	u32 avail = hp >= tp ? hp - tp : srng->ring_size - tp + hp;
+
+	ahead *= srng->entry_size;
+	if (ahead >= avail)
+		return NULL;
+
+	tp += ahead;
+	if (tp >= srng->ring_size)
+		tp -= srng->ring_size;
+
+	return (struct hal_reo_dest_ring *)(srng->ring_base_vaddr + tp);
+}
+
+static inline struct ath12k_rx_desc_info *
+ath12k_wifi7_dp_rx_desc_info(const struct hal_reo_dest_ring *desc)
+{
+	u64 desc_va = (u64)le32_to_cpu(desc->buf_va_hi) << 32 |
+		      le32_to_cpu(desc->buf_va_lo);
+
+	return (struct ath12k_rx_desc_info *)((unsigned long)desc_va);
+}
+
+/* Prefetch the lines of an Rx skb that the Rx path reads or writes: the
+ * control block, len, tail/end and head/data.
+ */
+static inline void ath12k_wifi7_dp_rx_prefetch_skb(struct sk_buff *skb)
+{
+	prefetchw(skb);
+	prefetchw((u8 *)skb + L1_CACHE_BYTES);
+	prefetchw((u8 *)skb + 2 * L1_CACHE_BYTES);
+	prefetchw((u8 *)skb + 3 * L1_CACHE_BYTES);
+}
+
 int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 			       struct napi_struct *napi, int budget)
 {
@@ -701,7 +782,12 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 	int num_buffs_reaped[ATH12K_MAX_DEVICES] = {};
 	struct ath12k_rx_desc_info *desc_info;
 	struct dp_rxdma_ring *rx_ring = &dp->rx_refill_buf_ring;
+	union ath12k_wifi7_reo_dest_copy desc_copy[ATH12K_WIFI7_RX_AHEAD + 1];
+	struct ath12k_rx_desc_info *ahead_info;
+	struct hal_reo_dest_ring *ring_desc;
 	struct hal_reo_dest_ring *desc;
+	struct dp_srng *reo_ring;
+	u32 cur = 0, num_ahead;
 	struct ath12k_dp *partner_dp;
 	struct sk_buff_head msdu_list;
 	struct ath12k_skb_rxcb *rxcb;
@@ -710,25 +796,73 @@ int ath12k_wifi7_dp_rx_process(struct ath12k_dp *dp, int ring_id,
 	struct hal_srng *srng;
 	struct sk_buff *msdu;
 	bool done = false;
-	u64 desc_va;
 
 	__skb_queue_head_init(&msdu_list);
 
 	for (device_id = 0; device_id < ATH12K_MAX_DEVICES; device_id++)
 		INIT_LIST_HEAD(&rx_desc_used_list[device_id]);
 
-	srng = &hal->srng_list[dp->reo_dst_ring[ring_id].ring_id];
+	reo_ring = &dp->reo_dst_ring[ring_id];
+	srng = &hal->srng_list[reo_ring->ring_id];
 
 	spin_lock_bh(&srng->lock);
 
 try_again:
 	ath12k_hal_srng_access_begin(ab, srng);
+	/* The ring is cacheable: one invalidate per head pointer read
+	 * instead of an uncached load per descriptor field.
+	 */
+	ath12k_dp_srng_dst_inval(ab, reo_ring, srng);
+	num_ahead = 0;
 
-	while ((desc = ath12k_hal_srng_dst_get_next_entry(ab, srng))) {
+	while ((ring_desc = ath12k_hal_srng_dst_get_next_entry(ab, srng))) {
 		struct rx_mpdu_desc *mpdu_info;
 		struct rx_msdu_desc *msdu_info;
 		enum hal_reo_dest_ring_push_reason push_reason;
-		u32 cookie;
+		u32 cookie, slot;
+
+		/* Work ahead: each memory object of an entry is first used at
+		 * least one entry after it was prefetched. The copy of this
+		 * entry was usually taken earlier, its SW descriptor
+		 * prefetched three entries ago and its skb one entry ago.
+		 */
+		cur = cur == ATH12K_WIFI7_RX_AHEAD ? 0 : cur + 1;
+		if (num_ahead)
+			num_ahead--;
+		else
+			ath12k_wifi7_dp_rx_copy_reo_desc(&desc_copy[cur],
+							 ring_desc);
+		desc = &desc_copy[cur].desc;
+
+		while (num_ahead < ATH12K_WIFI7_RX_AHEAD) {
+			ring_desc = ath12k_wifi7_dp_rx_peek_reo_desc(srng,
+								     num_ahead);
+			if (!ring_desc)
+				break;
+
+			slot = (cur + 1 + num_ahead) %
+			       (ATH12K_WIFI7_RX_AHEAD + 1);
+			ath12k_wifi7_dp_rx_copy_reo_desc(&desc_copy[slot],
+							 ring_desc);
+			num_ahead++;
+			ahead_info = ath12k_wifi7_dp_rx_desc_info(&desc_copy[slot].desc);
+			if (ahead_info)
+				prefetchw(ahead_info);
+		}
+
+		/* The ring is cacheable: start the fetch of the line the copy
+		 * above reaches two entries from now.
+		 */
+		ring_desc = ath12k_wifi7_dp_rx_peek_reo_desc(srng, num_ahead + 1);
+		if (ring_desc)
+			prefetch(ring_desc);
+
+		if (num_ahead) {
+			slot = cur == ATH12K_WIFI7_RX_AHEAD ? 0 : cur + 1;
+			ahead_info = ath12k_wifi7_dp_rx_desc_info(&desc_copy[slot].desc);
+			if (ahead_info && ahead_info->skb)
+				ath12k_wifi7_dp_rx_prefetch_skb(ahead_info->skb);
+		}
 
 		cookie = le32_get_bits(desc->buf_addr_info.info1,
 				       BUFFER_ADDR_INFO1_SW_COOKIE);
@@ -736,9 +870,7 @@ try_again:
 		hw_link_id = le32_get_bits(desc->info0,
 					   HAL_REO_DEST_RING_INFO0_SRC_LINK_ID);
 
-		desc_va = ((u64)le32_to_cpu(desc->buf_va_hi) << 32 |
-			   le32_to_cpu(desc->buf_va_lo));
-		desc_info = (struct ath12k_rx_desc_info *)((unsigned long)desc_va);
+		desc_info = ath12k_wifi7_dp_rx_desc_info(desc);
 
 		device_id = hw_links[hw_link_id].device_id;
 		partner_dp = ath12k_dp_hw_grp_to_dp(dp_hw_grp, device_id);
@@ -773,6 +905,14 @@ try_again:
 		dma_unmap_single(partner_dp->dev, rxcb->paddr,
 				 msdu->len + skb_tailroom(msdu),
 				 DMA_FROM_DEVICE);
+
+		/* The Rx TLVs and the frame header are read when the batch
+		 * is processed. Fetch them now, after the unmap has
+		 * invalidated the buffer.
+		 */
+		prefetch(msdu->data);
+		prefetch(msdu->data + L1_CACHE_BYTES);
+		prefetch(msdu->data + 2 * L1_CACHE_BYTES);
 
 		num_buffs_reaped[device_id]++;
 		dp->device_stats.reo_rx[ring_id][dp->device_id]++;

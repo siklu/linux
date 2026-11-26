@@ -37,6 +37,12 @@ struct dp_srng {
 	dma_addr_t paddr;
 	int size;
 	u32 ring_id;
+	/* Cacheable memory: only for rings the hardware writes and the CPU
+	 * only reads. The reader invalidates the entries between its tail
+	 * and the head pointer it has read before reading them, see
+	 * ath12k_dp_srng_dst_inval().
+	 */
+	bool cached;
 };
 
 struct dp_rxdma_mon_ring {
@@ -687,6 +693,8 @@ void ath12k_dp_pdev_free(struct ath12k_base *ab);
 int ath12k_dp_peer_setup(struct ath12k *ar, int vdev_id, const u8 *addr);
 void ath12k_dp_peer_cleanup(struct ath12k *ar, int vdev_id, const u8 *addr);
 void ath12k_dp_srng_cleanup(struct ath12k_base *ab, struct dp_srng *ring);
+void ath12k_dp_srng_dst_inval(struct ath12k_base *ab, struct dp_srng *ring,
+			      struct hal_srng *srng);
 int ath12k_dp_srng_setup(struct ath12k_base *ab, struct dp_srng *ring,
 			 enum hal_ring_type type, int ring_num,
 			 int mac_id, int num_entries);
